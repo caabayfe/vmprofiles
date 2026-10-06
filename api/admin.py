@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from nttdsp.web import Conflict, Forbidden, Invalid, NotFound, SecuredRouter, db, secured
 
-from access import COMPANY_ADMIN, GLOBAL_ADMIN, Access, as_json, audit, get_access
+from access import COMPANY_ADMIN, GLOBAL_ADMIN, INVENTORY_SYNC, Access, as_json, audit, get_access
 
 router = SecuredRouter()
 
@@ -24,7 +24,7 @@ class RoleAssignmentIn(BaseModel):
     user_id: UUID
     user_name: str = Field("", max_length=200)
     user_email: str = Field("", max_length=320)
-    role: Literal["global_admin", "company_admin", "requester"]
+    role: Literal["global_admin", "company_admin", "requester", "inventory_sync"]
     company_id: UUID | None = None
 
 
@@ -100,6 +100,10 @@ async def list_role_assignments(
 
 
 def _ensure_can_grant(acc: Access, role: str, company_id: UUID | None) -> None:
+    if role == INVENTORY_SYNC and company_id is None:
+        if not acc.is_global_admin:
+            raise Forbidden("only a global admin can grant global inventory sync")
+        return
     if role == GLOBAL_ADMIN:
         if company_id is not None:
             raise Invalid("global admin is not tied to a company")

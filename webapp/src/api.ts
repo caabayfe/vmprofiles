@@ -95,14 +95,15 @@ export async function searchCompanies(term: string): Promise<DfCompany[]> {
   return value.filter((c) => c.status === undefined || c.status === 'Active')
 }
 
-export async function searchUsers(term: string): Promise<DfUser[]> {
+/** Human users by default; machine callers (inventory feeds) are service accounts. */
+export async function searchUsers(term: string, includeServiceAccounts = false): Promise<DfUser[]> {
   const t = term.trim()
   if (!t) return []
   const { value } = await df<{ value: DfUser[] }>(`/l/api/client/dart/users?$top=20&$search=${encodeURIComponent(t)}`)
   return value.filter(
     (u) =>
       u.lifecycleStatus === 'Active' &&
-      !u.serviceAccount &&
-      (u.identity?.interactionStatus === undefined || u.identity.interactionStatus === 'Enabled'),
+      (includeServiceAccounts || !u.serviceAccount) &&
+      (includeServiceAccounts || u.identity?.interactionStatus === undefined || u.identity.interactionStatus === 'Enabled'),
   )
 }

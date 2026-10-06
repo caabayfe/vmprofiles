@@ -44,10 +44,13 @@ CREATE TABLE IF NOT EXISTS role_assignments (
     created_by  uuid        NOT NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT role_assignments_pkey PRIMARY KEY (id),
+    -- inventory_sync: machine role for external inventory feeds. Global
+    -- (company_id NULL) may sync any vCenter; company-scoped only that
+    -- company's vCenters.
     CONSTRAINT role_assignments_role_check
-        CHECK (role IN ('global_admin', 'company_admin', 'requester')),
+        CHECK (role IN ('global_admin', 'company_admin', 'requester', 'inventory_sync')),
     CONSTRAINT role_assignments_company_check
-        CHECK ((role = 'global_admin') = (company_id IS NULL)),
+        CHECK (role = 'inventory_sync' OR (role = 'global_admin') = (company_id IS NULL)),
     CONSTRAINT role_assignments_company_id_fkey
         FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE RESTRICT
 );
@@ -79,6 +82,9 @@ CREATE TABLE IF NOT EXISTS vcenters (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS vcenters_global_name_uq ON vcenters (name) WHERE company_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS vcenters_company_name_uq ON vcenters (company_id, name) WHERE company_id IS NOT NULL;
+-- FQDN identifies a vCenter for inventory syncs (one per scope).
+CREATE UNIQUE INDEX IF NOT EXISTS vcenters_global_fqdn_uq ON vcenters (lower(fqdn)) WHERE company_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS vcenters_company_fqdn_uq ON vcenters (company_id, lower(fqdn)) WHERE company_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS vcenters_company_id_idx ON vcenters (company_id);
 
 CREATE TABLE IF NOT EXISTS datacenters (
@@ -522,8 +528,34 @@ CREATE TABLE IF NOT EXISTS audit_events (
     CONSTRAINT audit_events_pkey PRIMARY KEY (id),
     CONSTRAINT audit_events_action_check
         CHECK (action IN ('create', 'update', 'archive', 'restore', 'delete', 'attach', 'detach',
-                          'submit', 'approve', 'reject', 'grant', 'revoke'))
+                          'submit', 'approve', 'reject', 'grant', 'revoke', 'sync'))
 );
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events (created_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_entity_idx ON audit_events (entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS audit_events_company_id_idx ON audit_events (company_id);
+
+-- ---------------------------------------------------------------------------
+-- Inventory syncs (external feeds of vCenter infrastructure)
+-- ---------------------------------------------------------------------------
+-- One row per accepted PUT /inventory/vcenter call (applied or dry run).
+-- Failed calls roll back entirely and leave no row.
+CREATE TABLE IF NOT EXISTS inventory_syncs (
+    id                 uuid        NOT NULL DEFAULT gen_random_uuid(),
+    vcenter_id         uuid,
+    vcenter_fqdn       text        NOT NULL,
+    source             text        NOT NULL DEFAULT '',
+    dry_run            boolean     NOT NULL DEFAULT false,
+    prune              boolean     NOT NULL DEFAULT true,
+    summary            jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    warnings           jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    change_count       integer     NOT NULL DEFAULT 0,
+    user_id            uuid        NOT NULL,
+    user_name          text        NOT NULL DEFAULT '',
+    real_user_id       uuid        NOT NULL,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT inventory_syncs_pkey PRIMARY KEY (id),
+    CONSTRAINT inventory_syncs_vcenter_id_fkey
+        FOREIGN KEY (vcenter_id) REFERENCES vcenters (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS inventory_syncs_vcenter_created_idx ON inventory_syncs (vcenter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS inventory_syncs_created_idx ON inventory_syncs (created_at DESC);

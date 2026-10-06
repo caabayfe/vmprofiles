@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Badge, Button, Details, Modal, Spinner, Tabs, Title, T } from '@nttdsp/react-components'
+import { Badge, BaseTable, Button, Details, Modal, Spinner, Tabs, Title, T } from '@nttdsp/react-components'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type UUID } from '../api'
 import { canManage, useMe } from '../hooks'
@@ -108,6 +108,86 @@ function AttachModal({
       </div>
       <ErrorText error={error} />
     </Modal>
+  )
+}
+
+interface SyncRow extends Row {
+  id: UUID
+  source: string
+  dry_run: boolean
+  change_count: number
+  warnings: string[]
+  summary: Record<string, Record<string, number>>
+  user_name: string
+  created_at: string
+}
+
+/** Compact "clusters +2 ~1 −1" style summary of one sync run. */
+function syncSummary(summary: SyncRow['summary']): string {
+  const sign: Record<string, string> = { created: '+', restored: '↺', updated: '~', archived: '−', attached: '+', detached: '−' }
+  return Object.entries(summary)
+    .map(([entity, counts]) => {
+      const parts = Object.entries(counts).filter(([k]) => sign[k]).map(([k, n]) => `${sign[k]}${n}`)
+      return parts.length ? `${entity} ${parts.join(' ')}` : ''
+    })
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** Runs of the external inventory feed for this vCenter. */
+function SyncHistory({ vcenterId }: { vcenterId: UUID }) {
+  const [detail, setDetail] = useState<SyncRow | null>(null)
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['inventory-syncs', vcenterId],
+    queryFn: () => api.get<SyncRow[]>('/inventory/syncs', { vcenter_id: vcenterId }),
+  })
+  return (
+    <>
+      <p className="vp-muted">{T.HELP_SYNC_HISTORY}</p>
+      <ErrorText error={error} />
+      <BaseTable
+        columns={[
+          { accessor: 'created_at', Header: T.COL_WHEN, visible: true,
+            Cell: ({ value }: { value: string }) => <>{new Date(value).toLocaleString()}</> },
+          { accessor: 'source', Header: T.COL_SOURCE, visible: true },
+          { accessor: 'user_name', Header: T.COL_BY, visible: true },
+          { accessor: 'dry_run', Header: T.COL_MODE, visible: true,
+            Cell: ({ value }: { value: boolean }) => value
+              ? <Badge appearance="secondary">{T.SYNC_DRY_RUN}</Badge> : <Badge appearance="success">{T.SYNC_APPLIED}</Badge> },
+          { accessor: 'change_count', Header: T.COL_CHANGES, visible: true,
+            Cell: ({ row }: { row: SyncRow }) => <>{row.change_count ? syncSummary(row.summary) : T.SYNC_NO_CHANGES}</> },
+          { accessor: 'warnings', Header: T.COL_WARNINGS, visible: true, width: '100px',
+            Cell: ({ value }: { value: string[] }) => value.length
+              ? <Badge appearance="warning">{value.length}</Badge> : <>0</> },
+        ]}
+        data={data ?? []}
+        loading={isLoading}
+        noDataMessage={T.NO_SYNCS}
+        rowActions={[{ id: 'details', label: T.ACTION_DETAILS, onSelect: (_e: unknown, { row }: { row: SyncRow }) => setDetail(row) }]}
+      />
+      <Modal show={!!detail} handleClose={() => setDetail(null)} title={T.SYNC_DETAILS} size="m">
+        {detail && (
+          <>
+            <Details data={[
+              { label: T.COL_WHEN, value: new Date(detail.created_at).toLocaleString() },
+              { label: T.COL_SOURCE, value: detail.source || undefined },
+              { label: T.COL_BY, value: detail.user_name },
+              { label: T.COL_MODE, value: detail.dry_run ? T.SYNC_DRY_RUN : T.SYNC_APPLIED },
+              ...Object.entries(detail.summary).map(([entity, counts]) => ({
+                label: entity,
+                value: Object.entries(counts).map(([k, n]) => `${k}: ${n}`).join(', '),
+              })),
+            ]} />
+            {detail.warnings.length > 0 && (
+              <>
+                <h2 className="main-heading vp-section">{T.COL_WARNINGS}</h2>
+                <ul>{detail.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              </>
+            )}
+          </>
+        )}
+      </Modal>
+    </>
   )
 }
 
@@ -290,6 +370,7 @@ export function VcenterDetailPage() {
           { id: 'templates', label: T.TAB_TEMPLATES, content: (
             <ResourceTable config={tplConfig} params={params} fixed={fixed} ownerCompanyId={owner} />
           ) },
+          { id: 'syncs', label: T.TAB_SYNCS, content: <SyncHistory vcenterId={vc.id as UUID} /> },
         ]} />
       </div>
       <AttachModal

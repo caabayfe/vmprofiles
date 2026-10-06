@@ -9,6 +9,8 @@ import { ErrorText, SelectField } from '../components/fields'
 import { ScopeBadge, ScopeSelect } from '../components/scope'
 import type { Row } from '../types'
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 interface Assignment extends Row {
   id: UUID
   user_id: UUID
@@ -38,7 +40,7 @@ function GrantModal({ show, onClose }: { show: boolean; onClose: () => void }) {
         return
       }
       setLoading(true)
-      searchUsers(term)
+      searchUsers(term, role === 'inventory_sync')
         .then((r) => live && setUsers(r))
         .catch((e) => live && setError(e))
         .finally(() => live && setLoading(false))
@@ -47,7 +49,7 @@ function GrantModal({ show, onClose }: { show: boolean; onClose: () => void }) {
       live = false
       clearTimeout(t)
     }
-  }, [term])
+  }, [term, role])
 
   const close = () => {
     setTerm('')
@@ -81,7 +83,7 @@ function GrantModal({ show, onClose }: { show: boolean; onClose: () => void }) {
       footer={
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <Button appearance="neutral" onClick={close}>{T.ACTION_CANCEL}</Button>
-          <Button appearance="primary" disabled={!user || (role !== 'global_admin' && !company)} onClick={grant}>{T.ACTION_GRANT}</Button>
+          <Button appearance="primary" disabled={!user || (role !== 'global_admin' && role !== 'inventory_sync' && !company)} onClick={grant}>{T.ACTION_GRANT}</Button>
         </div>
       }
     >
@@ -93,9 +95,16 @@ function GrantModal({ show, onClose }: { show: boolean; onClose: () => void }) {
           </div>
         ) : (
           <>
-            <Field label={T.FIELD_FIND_USER}>
+            <Field label={role === 'inventory_sync' ? T.FIELD_FIND_USER_OR_ID : T.FIELD_FIND_USER}>
               <Input value={term} autoFocus onChange={(e: { target: { value: string } }) => setTerm(e.target.value)} />
             </Field>
+            {role === 'inventory_sync' && UUID_RE.test(term.trim()) && (
+              <div>
+                <Button appearance="neutral" onClick={() => setUser({ id: term.trim(), profile: { name: term.trim() } })}>
+                  {T.ACTION_USE_THIS_ID}
+                </Button>
+              </div>
+            )}
             <div style={{ height: 240, overflowY: 'auto' }}>
               <BaseTable
                 columns={[
@@ -115,10 +124,13 @@ function GrantModal({ show, onClose }: { show: boolean; onClose: () => void }) {
           options={[
             { value: 'requester', label: T.ROLE_REQUESTER },
             { value: 'company_admin', label: T.ROLE_COMPANY_ADMIN },
+            { value: 'inventory_sync', label: T.ROLE_INVENTORY_SYNC },
             ...(me?.is_global_admin ? [{ value: 'global_admin', label: T.ROLE_GLOBAL_ADMIN }] : []),
           ]} />
+        {role === 'inventory_sync' && <p className="vp-muted">{T.HELP_INVENTORY_SYNC_ROLE}</p>}
         {role !== 'global_admin' && (
-          <ScopeSelect value={company} onChange={setCompany} label={T.FIELD_COMPANY} />
+          <ScopeSelect value={company} onChange={setCompany}
+            label={role === 'inventory_sync' ? T.FIELD_SYNC_SCOPE : T.FIELD_COMPANY} />
         )}
       </div>
       <ErrorText error={error} />

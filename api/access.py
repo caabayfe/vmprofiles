@@ -8,10 +8,12 @@ Roles:
   global_admin   -> everything, every company, global rows included
   company_admin  -> manage rows owned by their company, approve its requests
   requester      -> read profiles for their company, submit requests
+  inventory_sync -> machine role: push vCenter inventory (global = any
+                    vCenter, company-scoped = that company's vCenters)
 
 Endpoint gates use `requires=["permission:member" | "permission:admin" |
-"permission:global_admin"]`; row-level company checks happen in the
-handlers through the `Access` object.
+"permission:global_admin" | "permission:inventory"]`; row-level company
+checks happen in the handlers through the `Access` object.
 """
 
 import json
@@ -27,6 +29,7 @@ from nttdsp.web import Actor, Forbidden, Invalid, access_resolver, current_actor
 GLOBAL_ADMIN = "global_admin"
 COMPANY_ADMIN = "company_admin"
 REQUESTER = "requester"
+INVENTORY_SYNC = "inventory_sync"
 
 
 @dataclass
@@ -37,6 +40,8 @@ class Access:
     is_global_admin: bool = False
     admin_companies: set[UUID] = field(default_factory=set)
     requester_companies: set[UUID] = field(default_factory=set)
+    sync_global: bool = False
+    sync_companies: set[UUID] = field(default_factory=set)
 
     @property
     def member_companies(self) -> set[UUID]:
@@ -49,6 +54,20 @@ class Access:
     @property
     def is_any_admin(self) -> bool:
         return self.is_global_admin or bool(self.admin_companies)
+
+    @property
+    def can_sync_any(self) -> bool:
+        return self.is_any_admin or self.sync_global or bool(self.sync_companies)
+
+    def can_sync(self, company_id: UUID | None) -> bool:
+        """Push inventory for a vCenter owned by `company_id` (None = generic)."""
+        if self.is_global_admin or self.sync_global:
+            return True
+        return company_id is not None and (company_id in self.admin_companies or company_id in self.sync_companies)
+
+    def ensure_sync(self, company_id: UUID | None) -> None:
+        if not self.can_sync(company_id):
+            raise Forbidden("not allowed to sync inventory for this vCenter's scope")
 
     @property
     def impersonating(self) -> bool:
@@ -99,6 +118,11 @@ async def load_access(conn: asyncpg.Connection, actor: Actor) -> Access:
             acc.admin_companies.add(r["company_id"])
         elif r["role"] == REQUESTER:
             acc.requester_companies.add(r["company_id"])
+        elif r["role"] == INVENTORY_SYNC:
+            if r["company_id"] is None:
+                acc.sync_global = True
+            else:
+                acc.sync_companies.add(r["company_id"])
     return acc
 
 
@@ -121,6 +145,8 @@ async def permission_resolver(
         if name == "admin" and acc.is_any_admin:
             return True
         if name == "global_admin" and acc.is_global_admin:
+            return True
+        if name == "inventory" and acc.can_sync_any:
             return True
     return False
 
