@@ -107,18 +107,19 @@ CREATE TABLE IF NOT EXISTS clusters (
     datacenter_id  uuid        NOT NULL,
     name           text        NOT NULL,
     external_moref text,
-    -- Capacity (from the inventory feed or typed in); NULL = unknown.
-    cpu_cores           integer,
+    -- Capacity as total + used (from the inventory feed or typed in);
+    -- NULL = unknown. Checks use free = total - used.
+    cpu_total_mhz       integer,
+    cpu_used_mhz        integer,
     memory_total_gb     integer,
-    memory_free_gb      integer,
+    memory_used_gb      integer,
     capacity_updated_at timestamptz,
     is_active      boolean     NOT NULL DEFAULT true,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT clusters_pkey PRIMARY KEY (id),
     CONSTRAINT clusters_capacity_check CHECK (
-        (cpu_cores IS NULL OR cpu_cores > 0)
-        AND (memory_total_gb IS NULL OR memory_total_gb > 0)
-        AND (memory_free_gb IS NULL OR memory_free_gb >= 0)),
+        (cpu_total_mhz IS NULL OR cpu_total_mhz > 0) AND (cpu_used_mhz IS NULL OR cpu_used_mhz >= 0)
+        AND (memory_total_gb IS NULL OR memory_total_gb > 0) AND (memory_used_gb IS NULL OR memory_used_gb >= 0)),
     -- vcenter_id is denormalised so composite FKs below can pin a child to
     -- the same vCenter; this FK keeps it honest with the datacenter's.
     CONSTRAINT clusters_datacenter_fkey
@@ -128,6 +129,9 @@ CREATE TABLE IF NOT EXISTS clusters (
     CONSTRAINT clusters_id_datacenter_id_uq UNIQUE (id, datacenter_id)
 );
 CREATE INDEX IF NOT EXISTS clusters_datacenter_id_idx ON clusters (datacenter_id);
+-- Capacity moved from "free" to "total + used".
+-- @allow-drop clusters.cpu_cores
+-- @allow-drop clusters.memory_free_gb
 CREATE INDEX IF NOT EXISTS clusters_vcenter_datacenter_idx ON clusters (vcenter_id, datacenter_id);
 
 CREATE TABLE IF NOT EXISTS resource_pools (
@@ -135,10 +139,19 @@ CREATE TABLE IF NOT EXISTS resource_pools (
     cluster_id     uuid        NOT NULL,
     name           text        NOT NULL,
     path           text        NOT NULL DEFAULT '',
+    -- Reservation limits + usage; NULL limit = unlimited (inherits the cluster).
+    cpu_limit_mhz       integer,
+    cpu_used_mhz        integer,
+    memory_limit_gb     integer,
+    memory_used_gb      integer,
+    capacity_updated_at timestamptz,
     external_moref text,
     is_active      boolean     NOT NULL DEFAULT true,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT resource_pools_pkey PRIMARY KEY (id),
+    CONSTRAINT resource_pools_capacity_check CHECK (
+        (cpu_limit_mhz IS NULL OR cpu_limit_mhz > 0) AND (cpu_used_mhz IS NULL OR cpu_used_mhz >= 0)
+        AND (memory_limit_gb IS NULL OR memory_limit_gb > 0) AND (memory_used_gb IS NULL OR memory_used_gb >= 0)),
     CONSTRAINT resource_pools_cluster_id_fkey
         FOREIGN KEY (cluster_id) REFERENCES clusters (id) ON DELETE RESTRICT,
     CONSTRAINT resource_pools_cluster_name_uq UNIQUE (cluster_id, name),
@@ -151,13 +164,13 @@ CREATE TABLE IF NOT EXISTS datastores (
     name           text        NOT NULL,
     type           text        NOT NULL DEFAULT 'vmfs',
     capacity_gb    integer,
-    free_gb        integer,
+    used_gb        integer,
     capacity_updated_at timestamptz,
     external_moref text,
     is_active      boolean     NOT NULL DEFAULT true,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT datastores_pkey PRIMARY KEY (id),
-    CONSTRAINT datastores_free_check CHECK (free_gb IS NULL OR free_gb >= 0),
+    CONSTRAINT datastores_used_check CHECK (used_gb IS NULL OR used_gb >= 0),
     CONSTRAINT datastores_vcenter_id_fkey
         FOREIGN KEY (vcenter_id) REFERENCES vcenters (id) ON DELETE RESTRICT,
     CONSTRAINT datastores_type_check CHECK (type IN ('vmfs', 'nfs', 'vsan', 'vvol')),
@@ -167,6 +180,8 @@ CREATE TABLE IF NOT EXISTS datastores (
 );
 
 -- A datastore belongs to the vCenter and is attached to one or more clusters.
+-- @allow-drop datastores.free_gb
+
 CREATE TABLE IF NOT EXISTS clusters_datastores (
     vcenter_id   uuid NOT NULL,
     cluster_id   uuid NOT NULL,

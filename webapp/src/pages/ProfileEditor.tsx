@@ -89,6 +89,14 @@ function CapacitySummary({ form, d }: { form: Form; d: ReturnType<typeof useDeri
     value: free === null ? `${ram} GB · ${T.CAPACITY_UNKNOWN}` : `${ram} GB / ${free} GB ${T.FREE}`,
     warn: free !== null && ram > free,
   })
+  const pool = d.pools.find((p) => p.id === form.resource_pool_id)
+  if (pool?.memory_limit_gb) {
+    rows.push({
+      label: `${T.CAPACITY_POOL} ${pool.name}`,
+      value: pool.memory_free_gb === null ? `${ram} GB · ${T.CAPACITY_UNKNOWN}` : `${ram} GB / ${pool.memory_free_gb} GB ${T.FREE}`,
+      warn: pool.memory_free_gb !== null && ram > pool.memory_free_gb,
+    })
+  }
   const perDs = new Map<string, number>()
   for (const disk of form.disks) if (disk.datastore_id) perDs.set(disk.datastore_id, (perDs.get(disk.datastore_id) ?? 0) + disk.size_gb)
   for (const [id, gb] of perDs) {

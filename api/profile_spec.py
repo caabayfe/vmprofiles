@@ -99,7 +99,9 @@ async def expand_profile(conn: asyncpg.Connection, profile_id: UUID) -> dict[str
         "JOIN vm_sizes z ON z.id = a.vm_size_id WHERE a.vm_profile_id = $1 AND z.is_active "
         "ORDER BY z.vcpu, z.ram_gb", profile_id)
     datastores = await conn.fetch(
-        "SELECT d.id, d.name, d.free_gb FROM clusters_datastores l JOIN datastores d ON d.id = l.datastore_id "
+        "SELECT d.id, d.name, CASE WHEN d.capacity_gb IS NOT NULL AND d.used_gb IS NOT NULL "
+        "THEN d.capacity_gb - d.used_gb END AS free_gb "
+        "FROM clusters_datastores l JOIN datastores d ON d.id = l.datastore_id "
         "WHERE l.cluster_id = $1 AND d.is_active ORDER BY d.name", p["cluster_id"])
 
     warnings = [label for label, ok in [

@@ -53,18 +53,23 @@ async def lookups(
         "SELECT id, vcenter_id, name FROM datacenters WHERE is_active AND vcenter_id = ANY($1::uuid[]) "
         "ORDER BY name", vc_ids)
     clusters = await conn.fetch(
-        "SELECT id, vcenter_id, datacenter_id, name, cpu_cores, memory_total_gb, memory_free_gb, capacity_updated_at "
+        "SELECT id, vcenter_id, datacenter_id, name, cpu_total_mhz, cpu_used_mhz, memory_total_gb, memory_used_gb, "
+        "CASE WHEN memory_total_gb IS NOT NULL AND memory_used_gb IS NOT NULL "
+        "     THEN memory_total_gb - memory_used_gb END AS memory_free_gb, capacity_updated_at "
         "FROM clusters WHERE is_active AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)
     cl_ids = [c["id"] for c in clusters]
     pools = await conn.fetch(
-        "SELECT id, cluster_id, name, path FROM resource_pools WHERE is_active AND cluster_id = ANY($1::uuid[]) "
-        "ORDER BY name", cl_ids)
+        "SELECT id, cluster_id, name, path, cpu_limit_mhz, cpu_used_mhz, memory_limit_gb, memory_used_gb, "
+        "CASE WHEN memory_limit_gb IS NOT NULL AND memory_used_gb IS NOT NULL "
+        "     THEN memory_limit_gb - memory_used_gb END AS memory_free_gb, capacity_updated_at "
+        "FROM resource_pools WHERE is_active AND cluster_id = ANY($1::uuid[]) ORDER BY name", cl_ids)
     folders = await conn.fetch(
         "SELECT f.id, f.datacenter_id, f.path FROM vm_folders f JOIN datacenters d ON d.id = f.datacenter_id "
         "WHERE f.is_active AND d.vcenter_id = ANY($1::uuid[]) ORDER BY f.path", vc_ids)
     datastores = await conn.fetch(
-        "SELECT id, vcenter_id, name, type, capacity_gb, free_gb, capacity_updated_at FROM datastores WHERE is_active "
-        "AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)
+        "SELECT id, vcenter_id, name, type, capacity_gb, used_gb, "
+        "CASE WHEN capacity_gb IS NOT NULL AND used_gb IS NOT NULL THEN capacity_gb - used_gb END AS free_gb, "
+        "capacity_updated_at FROM datastores WHERE is_active AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)
     networks = await conn.fetch(
         "SELECT n.id, n.vcenter_id, n.name, n.type, n.vlan_id, n.subnet_cidr, n.gateway, n.dns_servers, "
         "n.dns_domain, n.ip_pool_start, n.ip_pool_end, "

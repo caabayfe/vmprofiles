@@ -43,14 +43,19 @@ class PoolInv(BaseModel):
     name: str = Name
     moref: str | None = Moref
     path: str = Field("", max_length=500)
+    cpu_limit_mhz: int | None = Field(None, ge=1, description="Omit for an unlimited pool")
+    cpu_used_mhz: int | None = Field(None, ge=0)
+    memory_limit_gb: int | None = Field(None, ge=1, description="Omit for an unlimited pool")
+    memory_used_gb: int | None = Field(None, ge=0)
 
 
 class ClusterInv(BaseModel):
     name: str = Name
     moref: str | None = Moref
-    cpu_cores: int | None = Field(None, ge=1, description="Physical cores in the cluster")
+    cpu_total_mhz: int | None = Field(None, ge=1)
+    cpu_used_mhz: int | None = Field(None, ge=0)
     memory_total_gb: int | None = Field(None, ge=1)
-    memory_free_gb: int | None = Field(None, ge=0)
+    memory_used_gb: int | None = Field(None, ge=0)
     resource_pools: list[PoolInv] = Field(default_factory=list, max_length=500)
     datastores: list[str] = Field(default_factory=list, max_length=2000,
                                   description="Names or morefs of datastores (declared below) attached to this cluster")
@@ -75,7 +80,7 @@ class DatastoreInv(BaseModel):
     moref: str | None = Moref
     type: Literal["vmfs", "nfs", "vsan", "vvol"] = "vmfs"
     capacity_gb: int | None = Field(None, ge=1)
-    free_gb: int | None = Field(None, ge=0)
+    used_gb: int | None = Field(None, ge=0)
 
 
 class NetworkInv(NetworkIpFields):
@@ -154,7 +159,8 @@ class Plan:
 # Optional facts a feed may not know: a missing (None) value never erases one
 # already stored (from an earlier sync or typed in by an admin).
 KEEP_IF_NONE = {
-    "external_moref", "capacity_gb", "free_gb", "cpu_cores", "memory_total_gb", "memory_free_gb",
+    "external_moref", "capacity_gb", "used_gb", "cpu_total_mhz", "cpu_used_mhz", "memory_total_gb", "memory_used_gb",
+    "cpu_limit_mhz", "memory_limit_gb",
     "subnet_cidr", "gateway", "dns_servers", "dns_domain", "ip_pool_start", "ip_pool_end",
 }
 
@@ -309,15 +315,17 @@ async def build_plan(conn: asyncpg.Connection, body: InventoryIn, vcenter: dict 
         existing = {
             "datacenters": await _rows(conn, "SELECT id, name, external_moref, is_active FROM datacenters "
                                              "WHERE vcenter_id = $1", vc_id),
-            "clusters": await _rows(conn, "SELECT id, datacenter_id, name, external_moref, cpu_cores, memory_total_gb, "
-                                          "memory_free_gb, is_active FROM clusters WHERE vcenter_id = $1", vc_id),
+            "clusters": await _rows(conn, "SELECT id, datacenter_id, name, external_moref, cpu_total_mhz, cpu_used_mhz, "
+                                          "memory_total_gb, memory_used_gb, is_active FROM clusters WHERE vcenter_id = $1",
+                                          vc_id),
             "resource_pools": await _rows(conn, "SELECT p.id, p.cluster_id, p.name, p.path, p.external_moref, "
+                                                "p.cpu_limit_mhz, p.cpu_used_mhz, p.memory_limit_gb, p.memory_used_gb, "
                                                 "p.is_active FROM resource_pools p JOIN clusters c ON c.id = p.cluster_id "
                                                 "WHERE c.vcenter_id = $1", vc_id),
             "vm_folders": await _rows(conn, "SELECT f.id, f.datacenter_id, f.path, f.external_moref, f.is_active "
                                             "FROM vm_folders f JOIN datacenters d ON d.id = f.datacenter_id "
                                             "WHERE d.vcenter_id = $1", vc_id),
-            "datastores": await _rows(conn, "SELECT id, name, type, capacity_gb, free_gb, external_moref, is_active "
+            "datastores": await _rows(conn, "SELECT id, name, type, capacity_gb, used_gb, external_moref, is_active "
                                             "FROM datastores WHERE vcenter_id = $1", vc_id),
             "networks": await _rows(conn, "SELECT id, name, type, vlan_id, subnet_cidr, gateway, dns_servers, dns_domain, "
                                           "ip_pool_start, ip_pool_end, external_moref, is_active "
@@ -352,14 +360,14 @@ async def build_plan(conn: asyncpg.Connection, body: InventoryIn, vcenter: dict 
     ds_ids = _reconcile(
         plan, entity="datastores", table="datastores", key="name", existing=existing["datastores"],
         incoming=body.datastores, prune=prune,
-        desired=lambda d: {"name": d.name, "type": d.type, "capacity_gb": d.capacity_gb, "free_gb": d.free_gb,
+        desired=lambda d: {"name": d.name, "type": d.type, "capacity_gb": d.capacity_gb, "used_gb": d.used_gb,
                            "external_moref": d.moref},
-        insert=lambda i, w: ("INSERT INTO datastores (id, vcenter_id, name, type, capacity_gb, free_gb, external_moref) "
+        insert=lambda i, w: ("INSERT INTO datastores (id, vcenter_id, name, type, capacity_gb, used_gb, external_moref) "
                              "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                             (i, vc_id, w["name"], w["type"], w["capacity_gb"], w["free_gb"], w["external_moref"])),
-        update=lambda i, w: ("UPDATE datastores SET name = $2, type = $3, capacity_gb = $4, free_gb = $5, "
+                             (i, vc_id, w["name"], w["type"], w["capacity_gb"], w["used_gb"], w["external_moref"])),
+        update=lambda i, w: ("UPDATE datastores SET name = $2, type = $3, capacity_gb = $4, used_gb = $5, "
                              "external_moref = $6, is_active = true WHERE id = $1",
-                             (i, w["name"], w["type"], w["capacity_gb"], w["free_gb"], w["external_moref"])),
+                             (i, w["name"], w["type"], w["capacity_gb"], w["used_gb"], w["external_moref"])),
     )
     net_ids = _reconcile(
         plan, entity="networks", table="networks", key="name", existing=existing["networks"],
@@ -394,21 +402,24 @@ async def build_plan(conn: asyncpg.Connection, body: InventoryIn, vcenter: dict 
     # -- clusters, pools, folders (per datacenter) -----------------------------
     cluster_links: list[tuple[str, UUID, ClusterInv]] = []
     capacity_clusters: list[UUID] = []
+    capacity_pools: list[UUID] = []
     for dc, dc_id in zip(body.datacenters, dc_ids):
         cl_ids = _reconcile(
             plan, entity="clusters", table="clusters", key="name", prune=prune,
             existing=[c for c in existing["clusters"] if c["datacenter_id"] == dc_id], incoming=dc.clusters,
-            desired=lambda c: {"name": c.name, "cpu_cores": c.cpu_cores, "memory_total_gb": c.memory_total_gb,
-                               "memory_free_gb": c.memory_free_gb, "external_moref": c.moref},
+            desired=lambda c: {"name": c.name, "cpu_total_mhz": c.cpu_total_mhz, "cpu_used_mhz": c.cpu_used_mhz,
+                               "memory_total_gb": c.memory_total_gb, "memory_used_gb": c.memory_used_gb,
+                               "external_moref": c.moref},
             insert=lambda i, w, dc_id=dc_id: (
-                "INSERT INTO clusters (id, vcenter_id, datacenter_id, name, cpu_cores, memory_total_gb, memory_free_gb, "
-                "external_moref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                (i, vc_id, dc_id, w["name"], w["cpu_cores"], w["memory_total_gb"], w["memory_free_gb"],
-                 w["external_moref"])),
-            update=lambda i, w: ("UPDATE clusters SET name = $2, cpu_cores = $3, memory_total_gb = $4, "
-                                 "memory_free_gb = $5, external_moref = $6, is_active = true WHERE id = $1",
-                                 (i, w["name"], w["cpu_cores"], w["memory_total_gb"], w["memory_free_gb"],
-                                  w["external_moref"])),
+                "INSERT INTO clusters (id, vcenter_id, datacenter_id, name, cpu_total_mhz, cpu_used_mhz, memory_total_gb, "
+                "memory_used_gb, external_moref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                (i, vc_id, dc_id, w["name"], w["cpu_total_mhz"], w["cpu_used_mhz"], w["memory_total_gb"],
+                 w["memory_used_gb"], w["external_moref"])),
+            update=lambda i, w: ("UPDATE clusters SET name = $2, cpu_total_mhz = $3, cpu_used_mhz = $4, "
+                                 "memory_total_gb = $5, memory_used_gb = $6, external_moref = $7, is_active = true "
+                                 "WHERE id = $1",
+                                 (i, w["name"], w["cpu_total_mhz"], w["cpu_used_mhz"], w["memory_total_gb"],
+                                  w["memory_used_gb"], w["external_moref"])),
         )
         _reconcile(
             plan, entity="folders", table="vm_folders", key="path", prune=prune,
@@ -421,19 +432,30 @@ async def build_plan(conn: asyncpg.Connection, body: InventoryIn, vcenter: dict 
                                  (i, w["path"], w["external_moref"])),
         )
         for cl, cl_id in zip(dc.clusters, cl_ids):
-            _reconcile(
+            pool_ids = _reconcile(
                 plan, entity="resource_pools", table="resource_pools", key="name", prune=prune,
                 existing=[p for p in existing["resource_pools"] if p["cluster_id"] == cl_id], incoming=cl.resource_pools,
-                desired=lambda p: {"name": p.name, "path": p.path, "external_moref": p.moref},
+                desired=lambda p: {"name": p.name, "path": p.path, "cpu_limit_mhz": p.cpu_limit_mhz,
+                                   "cpu_used_mhz": p.cpu_used_mhz, "memory_limit_gb": p.memory_limit_gb,
+                                   "memory_used_gb": p.memory_used_gb, "external_moref": p.moref},
                 insert=lambda i, w, cl_id=cl_id: (
-                    "INSERT INTO resource_pools (id, cluster_id, name, path, external_moref) VALUES ($1, $2, $3, $4, $5)",
-                    (i, cl_id, w["name"], w["path"], w["external_moref"])),
-                update=lambda i, w: ("UPDATE resource_pools SET name = $2, path = $3, external_moref = $4, "
-                                     "is_active = true WHERE id = $1", (i, w["name"], w["path"], w["external_moref"])),
+                    "INSERT INTO resource_pools (id, cluster_id, name, path, cpu_limit_mhz, cpu_used_mhz, "
+                    "memory_limit_gb, memory_used_gb, external_moref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                    (i, cl_id, w["name"], w["path"], w["cpu_limit_mhz"], w["cpu_used_mhz"], w["memory_limit_gb"],
+                     w["memory_used_gb"], w["external_moref"])),
+                update=lambda i, w: ("UPDATE resource_pools SET name = $2, path = $3, cpu_limit_mhz = $4, "
+                                     "cpu_used_mhz = $5, memory_limit_gb = $6, memory_used_gb = $7, external_moref = $8, "
+                                     "is_active = true WHERE id = $1",
+                                     (i, w["name"], w["path"], w["cpu_limit_mhz"], w["cpu_used_mhz"],
+                                      w["memory_limit_gb"], w["memory_used_gb"], w["external_moref"])),
             )
             cluster_links.append((f"{dc.name}/{cl.name}", cl_id, cl))
-            if any(v is not None for v in (cl.cpu_cores, cl.memory_total_gb, cl.memory_free_gb)):
+            if any(v is not None for v in (cl.cpu_total_mhz, cl.cpu_used_mhz, cl.memory_total_gb, cl.memory_used_gb)):
                 capacity_clusters.append(cl_id)
+            for pool, pool_id in zip(cl.resource_pools, pool_ids):
+                if any(v is not None for v in (pool.cpu_limit_mhz, pool.cpu_used_mhz, pool.memory_limit_gb,
+                                               pool.memory_used_gb)):
+                    capacity_pools.append(pool_id)
 
     # -- cluster attachments (after clusters / datastores / networks exist) ----
     target_name = {r["id"]: r["name"] for r in existing["datastores"] + existing["networks"]}
@@ -508,10 +530,13 @@ async def build_plan(conn: asyncpg.Connection, body: InventoryIn, vcenter: dict 
                               w["external_moref"])),
     )
     # Freshness of capacity figures — bookkeeping, not reported as a change.
-    capacity_ds = [i for item, i in zip(body.datastores, ds_ids) if item.capacity_gb is not None or item.free_gb is not None]
+    capacity_ds = [i for item, i in zip(body.datastores, ds_ids) if item.capacity_gb is not None or item.used_gb is not None]
     if capacity_clusters:
         plan.ops.append(("UPDATE clusters SET capacity_updated_at = now() WHERE id = ANY($1::uuid[])",
                          (capacity_clusters,)))
+    if capacity_pools:
+        plan.ops.append(("UPDATE resource_pools SET capacity_updated_at = now() WHERE id = ANY($1::uuid[])",
+                         (capacity_pools,)))
     if capacity_ds:
         plan.ops.append(("UPDATE datastores SET capacity_updated_at = now() WHERE id = ANY($1::uuid[])",
                          (capacity_ds,)))

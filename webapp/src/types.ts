@@ -42,11 +42,22 @@ export interface ClusterLookupType {
   id: UUID
   name: string
   datacenter_id: UUID
-  cpu_cores: number | null
+  cpu_total_mhz: number | null
+  cpu_used_mhz: number | null
   memory_total_gb: number | null
+  memory_used_gb: number | null
+  /** Derived by the API: total - used. */
   memory_free_gb: number | null
   capacity_updated_at: string | null
-  resource_pools: { id: UUID; name: string; path: string }[]
+  resource_pools: {
+    id: UUID
+    name: string
+    path: string
+    memory_limit_gb: number | null
+    memory_used_gb: number | null
+    /** Derived by the API: limit - used; null when unlimited or unknown. */
+    memory_free_gb: number | null
+  }[]
   datastore_ids: UUID[]
   network_ids: UUID[]
 }
@@ -62,7 +73,7 @@ export interface VcenterLookupType {
     clusters: ClusterLookupType[]
     folders: { id: UUID; path: string }[]
   }[]
-  datastores: { id: UUID; name: string; type: string; capacity_gb: number | null; free_gb: number | null }[]
+  datastores: { id: UUID; name: string; type: string; capacity_gb: number | null; used_gb: number | null; free_gb: number | null }[]
   networks: {
     id: UUID
     name: string

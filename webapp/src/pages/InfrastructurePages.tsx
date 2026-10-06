@@ -191,8 +191,12 @@ function SyncHistory({ vcenterId }: { vcenterId: UUID }) {
   )
 }
 
-const gbOf = (free: unknown, total: unknown) =>
-  free === null || free === undefined ? '—' : `${free as number} / ${(total as number | null) ?? '?'} GB`
+/** "used / total unit (free)" — free is derived, nothing is queried live. */
+const usage = (used: unknown, total: unknown, unit: string) => {
+  if (total === null || total === undefined) return '—'
+  if (used === null || used === undefined) return `? / ${total as number} ${unit}`
+  return `${used as number} / ${total as number} ${unit} (${(total as number) - (used as number)} ${T.FREE})`
+}
 const when = (value: unknown) => (value ? new Date(value as string).toLocaleDateString() : '—')
 
 interface AllocationRow extends Row {
@@ -308,17 +312,19 @@ export function VcenterDetailPage() {
     columns: [
       { accessor: 'name', Header: T.COL_NAME },
       { accessor: 'datacenter_name', Header: T.COL_DATACENTER },
-      { accessor: 'cpu_cores', Header: T.COL_CPU_CORES },
-      { accessor: 'memory_free_gb', Header: T.COL_MEMORY_FREE,
-        Cell: ({ row }: { row: Row }) => <>{gbOf(row.memory_free_gb, row.memory_total_gb)}</> },
+      { accessor: 'cpu_used_mhz', Header: T.COL_CPU_USAGE,
+        Cell: ({ row }: { row: Row }) => <>{usage(row.cpu_used_mhz, row.cpu_total_mhz, 'MHz')}</> },
+      { accessor: 'memory_used_gb', Header: T.COL_MEMORY_USAGE,
+        Cell: ({ row }: { row: Row }) => <>{usage(row.memory_used_gb, row.memory_total_gb, 'GB')}</> },
       { accessor: 'capacity_updated_at', Header: T.COL_CAPACITY_UPDATED, Cell: ({ value }: { value: unknown }) => <>{when(value)}</> },
     ],
     fields: [
       { key: 'datacenter_id', label: T.FIELD_DATACENTER, type: 'select', required: true, immutable: true, options: opts(dcs) },
       { key: 'name', label: T.FIELD_NAME, type: 'text', required: true },
-      { key: 'cpu_cores', label: T.FIELD_CPU_CORES, type: 'number', help: T.HELP_CAPACITY_FEED },
+      { key: 'cpu_total_mhz', label: T.FIELD_CPU_TOTAL, type: 'number', help: T.HELP_CAPACITY_FEED },
+      { key: 'cpu_used_mhz', label: T.FIELD_CPU_USED, type: 'number' },
       { key: 'memory_total_gb', label: T.FIELD_MEMORY_TOTAL, type: 'number' },
-      { key: 'memory_free_gb', label: T.FIELD_MEMORY_FREE, type: 'number' },
+      { key: 'memory_used_gb', label: T.FIELD_MEMORY_USED, type: 'number' },
     ],
   }), [dcs])
   const { data: clusters } = useResourceList(clusterConfig, params)
@@ -336,11 +342,18 @@ export function VcenterDetailPage() {
       { accessor: 'name', Header: T.COL_NAME },
       { accessor: 'cluster_name', Header: T.COL_CLUSTER },
       { accessor: 'path', Header: T.COL_PATH },
+      { accessor: 'memory_used_gb', Header: T.COL_MEMORY_USAGE,
+        Cell: ({ row }: { row: Row }) => <>{row.memory_limit_gb ? usage(row.memory_used_gb, row.memory_limit_gb, 'GB') : T.UNLIMITED}</> },
+      { accessor: 'capacity_updated_at', Header: T.COL_CAPACITY_UPDATED, Cell: ({ value }: { value: unknown }) => <>{when(value)}</> },
     ],
     fields: [
       { key: 'cluster_id', label: T.FIELD_CLUSTER, type: 'select', required: true, immutable: true, options: opts(clusters) },
       { key: 'name', label: T.FIELD_NAME, type: 'text', required: true },
       { key: 'path', label: T.FIELD_PATH, type: 'text' },
+      { key: 'memory_limit_gb', label: T.FIELD_MEMORY_LIMIT, type: 'number', help: T.HELP_POOL_LIMIT },
+      { key: 'memory_used_gb', label: T.FIELD_MEMORY_USED, type: 'number' },
+      { key: 'cpu_limit_mhz', label: T.FIELD_CPU_LIMIT, type: 'number' },
+      { key: 'cpu_used_mhz', label: T.FIELD_CPU_USED, type: 'number' },
     ],
   }), [clusters])
 
@@ -357,7 +370,8 @@ export function VcenterDetailPage() {
     columns: [
       { accessor: 'name', Header: T.COL_NAME },
       { accessor: 'type', Header: T.COL_TYPE },
-      { accessor: 'free_gb', Header: T.COL_FREE_CAPACITY, Cell: ({ row }: { row: Row }) => <>{gbOf(row.free_gb, row.capacity_gb)}</> },
+      { accessor: 'used_gb', Header: T.COL_STORAGE_USAGE,
+        Cell: ({ row }: { row: Row }) => <>{usage(row.used_gb, row.capacity_gb, 'GB')}</> },
       { accessor: 'capacity_updated_at', Header: T.COL_CAPACITY_UPDATED, Cell: ({ value }: { value: unknown }) => <>{when(value)}</> },
       clustersColumn,
     ],
@@ -366,7 +380,7 @@ export function VcenterDetailPage() {
       { key: 'type', label: T.FIELD_TYPE, type: 'select', required: true,
         options: ['vmfs', 'nfs', 'vsan', 'vvol'].map((v) => ({ value: v, label: v.toUpperCase() })) },
       { key: 'capacity_gb', label: T.FIELD_CAPACITY_GB, type: 'number', help: T.HELP_CAPACITY_FEED },
-      { key: 'free_gb', label: T.FIELD_FREE_GB, type: 'number' },
+      { key: 'used_gb', label: T.FIELD_USED_GB, type: 'number' },
     ],
     defaults: { type: 'vmfs' },
     // eslint-disable-next-line react-hooks/exhaustive-deps

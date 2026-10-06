@@ -83,15 +83,20 @@ class DatacenterIn(BaseModel):
 class ClusterIn(BaseModel):
     datacenter_id: UUID
     name: str = Name
-    cpu_cores: int | None = Field(None, ge=1)
+    cpu_total_mhz: int | None = Field(None, ge=1)
+    cpu_used_mhz: int | None = Field(None, ge=0)
     memory_total_gb: int | None = Field(None, ge=1)
-    memory_free_gb: int | None = Field(None, ge=0)
+    memory_used_gb: int | None = Field(None, ge=0)
 
 
 class ResourcePoolIn(BaseModel):
     cluster_id: UUID
     name: str = Name
     path: str = Field("", max_length=500)
+    cpu_limit_mhz: int | None = Field(None, ge=1)
+    cpu_used_mhz: int | None = Field(None, ge=0)
+    memory_limit_gb: int | None = Field(None, ge=1)
+    memory_used_gb: int | None = Field(None, ge=0)
 
 
 class DatastoreIn(BaseModel):
@@ -99,7 +104,7 @@ class DatastoreIn(BaseModel):
     name: str = Name
     type: Literal["vmfs", "nfs", "vsan", "vvol"] = "vmfs"
     capacity_gb: int | None = Field(None, ge=1)
-    free_gb: int | None = Field(None, ge=0)
+    used_gb: int | None = Field(None, ge=0)
 
 
 class NetworkIn(NetworkIpFields):
@@ -158,19 +163,22 @@ RESOURCES = [
     Resource("/datacenters", "datacenters", "datacenter", DatacenterIn, ["vcenter_id", "name"],
              "vcenter", immutable=["vcenter_id"], filters=["vcenter_id"]),
     Resource("/clusters", "clusters", "cluster", ClusterIn,
-             ["datacenter_id", "vcenter_id", "name", "cpu_cores", "memory_total_gb", "memory_free_gb"],
+             ["datacenter_id", "vcenter_id", "name", "cpu_total_mhz", "cpu_used_mhz", "memory_total_gb",
+              "memory_used_gb"],
              "datacenter", immutable=["datacenter_id", "vcenter_id"],
              filters=["vcenter_id", "datacenter_id"], before_create=_cluster_vcenter,
-             capacity_columns=["cpu_cores", "memory_total_gb", "memory_free_gb"],
+             capacity_columns=["cpu_total_mhz", "cpu_used_mhz", "memory_total_gb", "memory_used_gb"],
              extra_select=["(SELECT d.name FROM datacenters d WHERE d.id = t.datacenter_id) AS datacenter_name"]),
     Resource("/resource-pools", "resource_pools", "resource_pool", ResourcePoolIn,
-             ["cluster_id", "name", "path"], "cluster", immutable=["cluster_id"], filters=["cluster_id"],
+             ["cluster_id", "name", "path", "cpu_limit_mhz", "cpu_used_mhz", "memory_limit_gb", "memory_used_gb"],
+             "cluster", immutable=["cluster_id"], filters=["cluster_id"],
+             capacity_columns=["cpu_limit_mhz", "cpu_used_mhz", "memory_limit_gb", "memory_used_gb"],
              derived_filters={"vcenter_id": "(SELECT c.vcenter_id FROM clusters c WHERE c.id = t.cluster_id)"},
              extra_select=["(SELECT c.name FROM clusters c WHERE c.id = t.cluster_id) AS cluster_name",
                            "(SELECT c.vcenter_id FROM clusters c WHERE c.id = t.cluster_id) AS vcenter_id"]),
     Resource("/datastores", "datastores", "datastore", DatastoreIn,
-             ["vcenter_id", "name", "type", "capacity_gb", "free_gb"], "vcenter", immutable=["vcenter_id"],
-             filters=["vcenter_id"], capacity_columns=["capacity_gb", "free_gb"],
+             ["vcenter_id", "name", "type", "capacity_gb", "used_gb"], "vcenter", immutable=["vcenter_id"],
+             filters=["vcenter_id"], capacity_columns=["capacity_gb", "used_gb"],
              extra_select=[_CLUSTER_IDS.format(tbl="clusters_datastores", col="datastore_id")]),
     Resource("/networks", "networks", "network", NetworkIn,
              ["vcenter_id", "name", "type", "vlan_id", "subnet_cidr", "gateway", "dns_servers", "dns_domain",

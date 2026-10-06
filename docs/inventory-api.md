@@ -82,8 +82,11 @@ print(r.json()["summary"], r.json()["warnings"])
       "clusters": [
         {
           "name": "CL-A", "moref": "domain-c7",
-          "cpu_cores": 128, "memory_total_gb": 2048, "memory_free_gb": 640,
-          "resource_pools": [ { "name": "RP-Gold", "path": "/Resources/RP-Gold", "moref": "resgroup-9" } ],
+          "cpu_total_mhz": 384000, "cpu_used_mhz": 151000, "memory_total_gb": 2048, "memory_used_gb": 1408,
+          "resource_pools": [
+            { "name": "RP-Gold", "path": "/Resources/RP-Gold", "moref": "resgroup-9",
+              "memory_limit_gb": 512, "memory_used_gb": 300, "cpu_limit_mhz": 96000, "cpu_used_mhz": 41000 }
+          ],
           "datastores": [ "DS-01", "datastore-12" ],
           "networks":   [ "VLAN100" ]
         }
@@ -91,8 +94,8 @@ print(r.json()["summary"], r.json()["warnings"])
     }
   ],
   "datastores": [
-    { "name": "DS-01", "moref": "datastore-11", "type": "vmfs", "capacity_gb": 4096, "free_gb": 1500 },
-    { "name": "DS-02", "moref": "datastore-12", "type": "vsan", "capacity_gb": 8192, "free_gb": 6000 }
+    { "name": "DS-01", "moref": "datastore-11", "type": "vmfs", "capacity_gb": 4096, "used_gb": 2596 },
+    { "name": "DS-02", "moref": "datastore-12", "type": "vsan", "capacity_gb": 8192, "used_gb": 2192 }
   ],
   "networks": [
     { "name": "VLAN100", "moref": "dvportgroup-21", "type": "dvportgroup", "vlan_id": 100,
@@ -122,10 +125,16 @@ Field notes:
   OS's *VMware guest ID* in *Catalog → Operating systems*. Templates whose OS
   can't be resolved are **skipped with a warning** (an already-known template
   keeps its previous OS).
-- **Capacity** (optional): cluster `cpu_cores`, `memory_total_gb`,
-  `memory_free_gb`; datastore `capacity_gb`, `free_gb`. Used for capacity
-  warnings in the profile wizard and on requests; each sync that sends them
-  refreshes their "updated" timestamp.
+- **Capacity** (optional), always as **total + used**, the way vCenter reports
+  it: cluster `cpu_total_mhz` / `cpu_used_mhz`, `memory_total_gb` /
+  `memory_used_gb`; resource pool `memory_limit_gb` / `memory_used_gb`,
+  `cpu_limit_mhz` / `cpu_used_mhz` (omit the limits for an unlimited pool);
+  datastore `capacity_gb` / `used_gb`. The app derives free = total − used and
+  warns (never blocks) in the profile wizard and on requests when memory or
+  storage won't fit. Nothing is queried live — checks use what the last sync
+  stored, so sync regularly; each sync that sends capacity refreshes its
+  "updated" timestamp and checks flag data older than 7 days. CPU is shown but
+  not checked (vCPUs are normally overcommitted).
 - **Network addressing** (optional, IPv4): `subnet_cidr`, `gateway`,
   `dns_servers`, `dns_domain`, `ip_pool_start` / `ip_pool_end`. The gateway
   and pool must sit inside the subnet and the gateway outside the pool. A
