@@ -173,6 +173,10 @@ setTranslations({
     HELP_NO_DATASTORES_ATTACHED:
       'No datastores are attached to this cluster, so disks will use the cluster default. To choose one, open the Datastores tab in the vCenter and use “Attach to clusters”.',
     LINK_OPEN_VCENTER: 'Open vCenter',
+    HELP_TEMPLATE_PICK_OS: 'Choose an operating system in the Compute step to see matching templates.',
+    HELP_NO_TEMPLATES_FOR_OS: 'No templates on this vCenter are registered for __os__.',
+    HELP_TEMPLATES_ON_VCENTER: 'Templates on this vCenter',
+    HELP_NO_TEMPLATES_ON_VCENTER: 'This vCenter has no templates yet.',
     HELP_SOFTWARE_SCOPE: 'Global software plus software of this profile’s company, filtered by operating system.',
     HELP_PROFILE_HAS_REQUESTS: 'This profile has requests. Edits apply to new requests only; submitted requests keep their own copy.',
     HELP_HOSTNAME: 'Letters, digits and hyphens. With quantity > 1 this is used as a prefix.',

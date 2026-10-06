@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Badge, Button, Details, Spinner, Title, T } from '@nttdsp/react-components'
+import { Badge, Button, Details, Spinner, Title, T, hydrateTranslation } from '@nttdsp/react-components'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type UUID } from '../api'
 import { canManage, useLookups, useMe } from '../hooks'
@@ -225,6 +225,10 @@ export function ProfileEditor() {
   if (!isNew && (existing.isLoading || !meta)) return <Spinner />
   if (existing.error) return <div className="vp-page"><ErrorText error={existing.error} /></div>
 
+  const otherTemplates = (d.vcenter?.templates ?? []).map((t) => {
+    const os = lookups?.operating_systems.find((o) => o.id === t.operating_system_id)
+    return `${t.name} (${os ? `${os.name} ${os.version}` : '?'})`
+  })
   const opt = <X extends { id: UUID }>(list: X[], label: (x: X) => string) => list.map((x) => ({ value: x.id, label: label(x) }))
   const title = isNew ? T.ACTION_NEW_PROFILE : form.name
 
@@ -273,6 +277,16 @@ export function ProfileEditor() {
               emptyLabel={T.NONE_OPTION} options={opt(d.folders, (f) => f.path)} onChange={(v) => set('vm_folder_id', v)} />
             <SelectField label={T.FIELD_TEMPLATE} value={form.vm_template_id} disabled={readOnly || !form.vcenter_id || !form.operating_system_id}
               emptyLabel={T.NONE_OPTION} help={T.HELP_TEMPLATE} options={opt(d.templates, (t) => t.name)} onChange={changeTemplate} />
+            {form.vcenter_id && !form.operating_system_id && <p className="vp-muted">{T.HELP_TEMPLATE_PICK_OS}</p>}
+            {form.vcenter_id && form.operating_system_id && d.templates.length === 0 && (
+              <p className="vp-muted">
+                {hydrateTranslation(T.HELP_NO_TEMPLATES_FOR_OS, { os: d.os ? `${d.os.name} ${d.os.version}` : '' })}{' '}
+                {otherTemplates.length > 0
+                  ? `${T.HELP_TEMPLATES_ON_VCENTER}: ${otherTemplates.join(', ')}.`
+                  : T.HELP_NO_TEMPLATES_ON_VCENTER}{' '}
+                <Link to={`/infrastructure/${form.vcenter_id}`}>{T.LINK_OPEN_VCENTER}</Link>
+              </p>
+            )}
             {form.cluster_id && (
               <p className="vp-muted">
                 {T.HELP_CLUSTER_ATTACHED}: {d.datastores.length} {T.TAB_DATASTORES.toLowerCase()}, {d.networks.length} {T.TAB_NETWORKS.toLowerCase()}
