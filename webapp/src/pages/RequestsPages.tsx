@@ -148,7 +148,8 @@ export function NewRequestPage() {
   const preview = useQuery({
     queryKey: ['request-preview', debounced],
     queryFn: () => api.post<ExpandedProfileType>('/requests/preview', JSON.parse(debounced)),
-    enabled: !!profileId && !!companyId,
+    // Skip the stale debounced body from before a profile was picked.
+    enabled: !!profileId && !!companyId && JSON.parse(debounced).vm_profile_id === profileId,
     retry: false,
   })
 
