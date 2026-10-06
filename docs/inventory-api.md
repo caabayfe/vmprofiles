@@ -82,6 +82,7 @@ print(r.json()["summary"], r.json()["warnings"])
       "clusters": [
         {
           "name": "CL-A", "moref": "domain-c7",
+          "cpu_cores": 128, "memory_total_gb": 2048, "memory_free_gb": 640,
           "resource_pools": [ { "name": "RP-Gold", "path": "/Resources/RP-Gold", "moref": "resgroup-9" } ],
           "datastores": [ "DS-01", "datastore-12" ],
           "networks":   [ "VLAN100" ]
@@ -90,11 +91,14 @@ print(r.json()["summary"], r.json()["warnings"])
     }
   ],
   "datastores": [
-    { "name": "DS-01", "moref": "datastore-11", "type": "vmfs", "capacity_gb": 4096 },
-    { "name": "DS-02", "moref": "datastore-12", "type": "vsan", "capacity_gb": 8192 }
+    { "name": "DS-01", "moref": "datastore-11", "type": "vmfs", "capacity_gb": 4096, "free_gb": 1500 },
+    { "name": "DS-02", "moref": "datastore-12", "type": "vsan", "capacity_gb": 8192, "free_gb": 6000 }
   ],
   "networks": [
-    { "name": "VLAN100", "moref": "dvportgroup-21", "type": "dvportgroup", "vlan_id": 100 }
+    { "name": "VLAN100", "moref": "dvportgroup-21", "type": "dvportgroup", "vlan_id": 100,
+      "subnet_cidr": "10.100.0.0/24", "gateway": "10.100.0.1",
+      "dns_servers": ["10.0.0.53", "10.0.0.54"], "dns_domain": "acme.local",
+      "ip_pool_start": "10.100.0.50", "ip_pool_end": "10.100.0.199" }
   ],
   "templates": [
     { "name": "tpl-w2022", "moref": "vm-501", "guest_id": "windows2019srvNext_64Guest", "os_disk_gb": 90 },
@@ -118,6 +122,18 @@ Field notes:
   OS's *VMware guest ID* in *Catalog → Operating systems*. Templates whose OS
   can't be resolved are **skipped with a warning** (an already-known template
   keeps its previous OS).
+- **Capacity** (optional): cluster `cpu_cores`, `memory_total_gb`,
+  `memory_free_gb`; datastore `capacity_gb`, `free_gb`. Used for capacity
+  warnings in the profile wizard and on requests; each sync that sends them
+  refreshes their "updated" timestamp.
+- **Network addressing** (optional, IPv4): `subnet_cidr`, `gateway`,
+  `dns_servers`, `dns_domain`, `ip_pool_start` / `ip_pool_end`. The gateway
+  and pool must sit inside the subnet and the gateway outside the pool. A
+  network with a pool is **static**: VMs get the next free address of the
+  pool when their request is approved. Without a pool it is treated as DHCP.
+- **Omitted optional fields keep their stored value** (morefs, capacity and
+  addressing): a feed that doesn't know subnets won't wipe the ones admins
+  typed in. Send an explicit value to change them.
 - Enumerations: datastore `type` ∈ `vmfs | nfs | vsan | vvol`; network `type`
   ∈ `standard | dvportgroup | nsx`; `vlan_id` 0–4094.
 - Limits per call: 200 datacenters, 500 clusters per datacenter, 5000

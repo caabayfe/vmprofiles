@@ -53,8 +53,8 @@ async def lookups(
         "SELECT id, vcenter_id, name FROM datacenters WHERE is_active AND vcenter_id = ANY($1::uuid[]) "
         "ORDER BY name", vc_ids)
     clusters = await conn.fetch(
-        "SELECT id, vcenter_id, datacenter_id, name FROM clusters WHERE is_active AND vcenter_id = ANY($1::uuid[]) "
-        "ORDER BY name", vc_ids)
+        "SELECT id, vcenter_id, datacenter_id, name, cpu_cores, memory_total_gb, memory_free_gb, capacity_updated_at "
+        "FROM clusters WHERE is_active AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)
     cl_ids = [c["id"] for c in clusters]
     pools = await conn.fetch(
         "SELECT id, cluster_id, name, path FROM resource_pools WHERE is_active AND cluster_id = ANY($1::uuid[]) "
@@ -63,11 +63,15 @@ async def lookups(
         "SELECT f.id, f.datacenter_id, f.path FROM vm_folders f JOIN datacenters d ON d.id = f.datacenter_id "
         "WHERE f.is_active AND d.vcenter_id = ANY($1::uuid[]) ORDER BY f.path", vc_ids)
     datastores = await conn.fetch(
-        "SELECT id, vcenter_id, name, type, capacity_gb FROM datastores WHERE is_active "
+        "SELECT id, vcenter_id, name, type, capacity_gb, free_gb, capacity_updated_at FROM datastores WHERE is_active "
         "AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)
     networks = await conn.fetch(
-        "SELECT id, vcenter_id, name, type, vlan_id FROM networks WHERE is_active "
-        "AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)
+        "SELECT n.id, n.vcenter_id, n.name, n.type, n.vlan_id, n.subnet_cidr, n.gateway, n.dns_servers, "
+        "n.dns_domain, n.ip_pool_start, n.ip_pool_end, "
+        "CASE WHEN n.ip_pool_start IS NULL THEN NULL ELSE (n.ip_pool_end - n.ip_pool_start + 1) - "
+        "(SELECT count(*) FROM ip_allocations a WHERE a.network_id = n.id "
+        " AND a.ip BETWEEN n.ip_pool_start AND n.ip_pool_end) END AS ip_free "
+        "FROM networks n WHERE n.is_active AND n.vcenter_id = ANY($1::uuid[]) ORDER BY n.name", vc_ids)
     templates = await conn.fetch(
         "SELECT id, vcenter_id, operating_system_id, name, os_disk_gb FROM vm_templates WHERE is_active "
         "AND vcenter_id = ANY($1::uuid[]) ORDER BY name", vc_ids)

@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type UUID } from '../api'
 import { canManage, useMe } from '../hooks'
 import { useBreadcrumbs } from '../portal'
-import { CheckboxField, ErrorText } from '../components/fields'
+import { CheckboxField, ErrorText, TextField } from '../components/fields'
 import { ResourceTable, useResourceList, type ResourceConfig } from '../components/ResourceTable'
 import { ScopeBadge, ScopeFilter } from '../components/scope'
 import type { OperatingSystemType, Row } from '../types'
@@ -18,7 +18,7 @@ const vcentersConfig = (): ResourceConfig => ({
   columns: [
     {
       accessor: 'name', Header: T.COL_NAME,
-      Cell: ({ row }) => <Link to={`/infrastructure/${row.id as string}`}>{row.name as string}</Link>,
+      Cell: ({ row }: { row: Row }) => <Link to={`/infrastructure/${row.id as string}`}>{row.name as string}</Link>,
     },
     { accessor: 'fqdn', Header: T.COL_FQDN },
     { accessor: 'description', Header: T.COL_DESCRIPTION },
@@ -191,6 +191,95 @@ function SyncHistory({ vcenterId }: { vcenterId: UUID }) {
   )
 }
 
+const gbOf = (free: unknown, total: unknown) =>
+  free === null || free === undefined ? '—' : `${free as number} / ${(total as number | null) ?? '?'} GB`
+const when = (value: unknown) => (value ? new Date(value as string).toLocaleDateString() : '—')
+
+interface AllocationRow extends Row {
+  id: UUID
+  ip: string
+  kind: 'request' | 'reserved'
+  hostname: string
+  note: string
+  vm_request_id: UUID | null
+}
+
+/** Allocations of a network's IP pool; reserve externally-used IPs, release. */
+function IpAddressesModal({ network, onClose }: { network: Row | null; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [ip, setIp] = useState('')
+  const [note, setNote] = useState('')
+  const [error, setError] = useState<unknown>(null)
+  const id = network?.id as UUID | undefined
+  const { data, isLoading } = useQuery({
+    queryKey: ['ip-allocations', id],
+    queryFn: () => api.get<AllocationRow[]>(`/networks/${id}/ip-allocations`),
+    enabled: !!id,
+  })
+  const refresh = async () => {
+    await qc.invalidateQueries({ queryKey: ['ip-allocations', id] })
+    await qc.invalidateQueries({ queryKey: ['networks'] })
+    await qc.invalidateQueries({ queryKey: ['lookups'] })
+  }
+  const reserve = async () => {
+    setError(null)
+    try {
+      await api.post(`/networks/${id}/ip-allocations`, { ip: ip.trim(), note })
+      setIp('')
+      setNote('')
+      await refresh()
+    } catch (e) {
+      setError(e)
+    }
+  }
+  const release = async (row: AllocationRow) => {
+    setError(null)
+    try {
+      await api.del(`/ip-allocations/${row.id}`)
+      await refresh()
+    } catch (e) {
+      setError(e)
+    }
+  }
+  return (
+    <Modal show={!!network} handleClose={onClose} size="l"
+      title={`${T.ACTION_IP_ADDRESSES} — ${(network?.name as string) ?? ''}`}>
+      {network && (
+        <Details data={[
+          { label: T.FIELD_SUBNET, value: network.subnet_cidr as string },
+          { label: T.FIELD_GATEWAY, value: (network.gateway as string) || undefined },
+          { label: T.COL_IP_POOL, value: network.ip_pool_start
+            ? `${network.ip_pool_start as string} – ${network.ip_pool_end as string}` : T.ADDRESSING_DHCP },
+        ]} />
+      )}
+      <div className="vp-grid-row vp-section" style={{ gridTemplateColumns: '1fr 2fr auto' }}>
+        <TextField label={T.FIELD_RESERVE_IP} value={ip} onChange={setIp} />
+        <TextField label={T.FIELD_NOTE} value={note} onChange={setNote} />
+        <Button appearance="neutral" disabled={!ip.trim()} onClick={reserve}>{T.ACTION_RESERVE}</Button>
+      </div>
+      <ErrorText error={error} />
+      <div style={{ height: 320, overflowY: 'auto', marginTop: 12 }}>
+        <BaseTable
+          columns={[
+            { accessor: 'ip', Header: T.COL_IP, visible: true },
+            { accessor: 'kind', Header: T.COL_TYPE, visible: true,
+              Cell: ({ value }: { value: string }) => value === 'reserved'
+                ? <Badge appearance="secondary">{T.IP_RESERVED}</Badge> : <Badge appearance="info">{T.IP_ASSIGNED}</Badge> },
+            { accessor: 'hostname', Header: T.FIELD_HOSTNAME, visible: true,
+              Cell: ({ row }: { row: AllocationRow }) => row.vm_request_id
+                ? <Link to={`/requests/${row.vm_request_id}`} onClick={onClose}>{row.hostname}</Link> : <>{row.note}</> },
+          ]}
+          data={data ?? []}
+          loading={isLoading}
+          noDataMessage={T.NO_ALLOCATIONS}
+          rowActions={[{ id: 'release', label: T.ACTION_RELEASE,
+            onSelect: (_e: unknown, { row }: { row: AllocationRow }) => release(row) }]}
+        />
+      </div>
+    </Modal>
+  )
+}
+
 export function VcenterDetailPage() {
   const { vcenterId } = useParams()
   const { data: me } = useMe()
@@ -205,6 +294,7 @@ export function VcenterDetailPage() {
   const params = { vcenter_id: vcenterId }
 
   const [attach, setAttach] = useState<{ row: Row; kind: 'datastores' | 'networks' } | null>(null)
+  const [ipNetwork, setIpNetwork] = useState<Row | null>(null)
 
   const dcConfig: ResourceConfig = useMemo(() => ({
     path: '/datacenters', queryKey: 'datacenters', singular: T.SINGULAR_DATACENTER,
@@ -215,10 +305,20 @@ export function VcenterDetailPage() {
 
   const clusterConfig: ResourceConfig = useMemo(() => ({
     path: '/clusters', queryKey: 'clusters', singular: T.SINGULAR_CLUSTER,
-    columns: [{ accessor: 'name', Header: T.COL_NAME }, { accessor: 'datacenter_name', Header: T.COL_DATACENTER }],
+    columns: [
+      { accessor: 'name', Header: T.COL_NAME },
+      { accessor: 'datacenter_name', Header: T.COL_DATACENTER },
+      { accessor: 'cpu_cores', Header: T.COL_CPU_CORES },
+      { accessor: 'memory_free_gb', Header: T.COL_MEMORY_FREE,
+        Cell: ({ row }: { row: Row }) => <>{gbOf(row.memory_free_gb, row.memory_total_gb)}</> },
+      { accessor: 'capacity_updated_at', Header: T.COL_CAPACITY_UPDATED, Cell: ({ value }: { value: unknown }) => <>{when(value)}</> },
+    ],
     fields: [
       { key: 'datacenter_id', label: T.FIELD_DATACENTER, type: 'select', required: true, immutable: true, options: opts(dcs) },
       { key: 'name', label: T.FIELD_NAME, type: 'text', required: true },
+      { key: 'cpu_cores', label: T.FIELD_CPU_CORES, type: 'number', help: T.HELP_CAPACITY_FEED },
+      { key: 'memory_total_gb', label: T.FIELD_MEMORY_TOTAL, type: 'number' },
+      { key: 'memory_free_gb', label: T.FIELD_MEMORY_FREE, type: 'number' },
     ],
   }), [dcs])
   const { data: clusters } = useResourceList(clusterConfig, params)
@@ -257,14 +357,16 @@ export function VcenterDetailPage() {
     columns: [
       { accessor: 'name', Header: T.COL_NAME },
       { accessor: 'type', Header: T.COL_TYPE },
-      { accessor: 'capacity_gb', Header: T.COL_CAPACITY_GB },
+      { accessor: 'free_gb', Header: T.COL_FREE_CAPACITY, Cell: ({ row }: { row: Row }) => <>{gbOf(row.free_gb, row.capacity_gb)}</> },
+      { accessor: 'capacity_updated_at', Header: T.COL_CAPACITY_UPDATED, Cell: ({ value }: { value: unknown }) => <>{when(value)}</> },
       clustersColumn,
     ],
     fields: [
       { key: 'name', label: T.FIELD_NAME, type: 'text', required: true },
       { key: 'type', label: T.FIELD_TYPE, type: 'select', required: true,
         options: ['vmfs', 'nfs', 'vsan', 'vvol'].map((v) => ({ value: v, label: v.toUpperCase() })) },
-      { key: 'capacity_gb', label: T.FIELD_CAPACITY_GB, type: 'number' },
+      { key: 'capacity_gb', label: T.FIELD_CAPACITY_GB, type: 'number', help: T.HELP_CAPACITY_FEED },
+      { key: 'free_gb', label: T.FIELD_FREE_GB, type: 'number' },
     ],
     defaults: { type: 'vmfs' },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -276,6 +378,11 @@ export function VcenterDetailPage() {
       { accessor: 'name', Header: T.COL_NAME },
       { accessor: 'type', Header: T.COL_TYPE },
       { accessor: 'vlan_id', Header: T.COL_VLAN },
+      { accessor: 'subnet_cidr', Header: T.COL_SUBNET, Cell: ({ value }: { value: unknown }) => <>{(value as string) || '—'}</> },
+      { accessor: 'ip_pool_size', Header: T.COL_IP_POOL,
+        Cell: ({ row }: { row: Row }) => row.ip_pool_size
+          ? <>{`${row.ip_allocated as number} / ${row.ip_pool_size as number} ${T.USED}`}</>
+          : <Badge appearance="secondary">{T.ADDRESSING_DHCP}</Badge> },
       clustersColumn,
     ],
     fields: [
@@ -284,8 +391,14 @@ export function VcenterDetailPage() {
         options: [{ value: 'dvportgroup', label: 'Distributed port group' }, { value: 'standard', label: 'Standard' },
           { value: 'nsx', label: 'NSX segment' }] },
       { key: 'vlan_id', label: T.FIELD_VLAN, type: 'number' },
+      { key: 'subnet_cidr', label: T.FIELD_SUBNET, type: 'text', help: T.HELP_SUBNET },
+      { key: 'gateway', label: T.FIELD_GATEWAY, type: 'text' },
+      { key: 'dns_servers', label: T.FIELD_DNS_SERVERS, type: 'text', help: T.HELP_DNS_SERVERS },
+      { key: 'dns_domain', label: T.FIELD_DNS_DOMAIN, type: 'text' },
+      { key: 'ip_pool_start', label: T.FIELD_POOL_START, type: 'text', help: T.HELP_IP_POOL },
+      { key: 'ip_pool_end', label: T.FIELD_POOL_END, type: 'text' },
     ],
-    defaults: { type: 'dvportgroup' },
+    defaults: { type: 'dvportgroup', dns_servers: [] },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [clusters])
 
@@ -328,6 +441,10 @@ export function VcenterDetailPage() {
   const attachAction = (kind: 'datastores' | 'networks') => [{
     id: 'attach', label: T.ACTION_ATTACH_CLUSTERS, onSelect: (row: Row) => setAttach({ row, kind }),
   }]
+  const networkActions = [...attachAction('networks'), {
+    id: 'ips', label: T.ACTION_IP_ADDRESSES, visible: (row: Row) => !!row.subnet_cidr,
+    onSelect: (row: Row) => setIpNetwork(row),
+  }]
   const editable = canManage(me, owner)
 
   return (
@@ -362,7 +479,7 @@ export function VcenterDetailPage() {
           ) },
           { id: 'networks', label: T.TAB_NETWORKS, content: (
             <ResourceTable config={netConfig} params={params} fixed={fixed} ownerCompanyId={owner}
-              extraActions={attachAction('networks')} />
+              extraActions={networkActions} />
           ) },
           { id: 'folders', label: T.TAB_FOLDERS, content: (
             <ResourceTable config={folderConfig} params={params} ownerCompanyId={owner} />
@@ -379,6 +496,7 @@ export function VcenterDetailPage() {
         clusters={clusters ?? []}
         onClose={() => setAttach(null)}
       />
+      <IpAddressesModal network={ipNetwork} onClose={() => setIpNetwork(null)} />
     </div>
   )
 }

@@ -14,6 +14,9 @@ Modules (one domain per file):
   requests_api.py  provisioning requests (submit / approve / reject)
   admin.py         /me, company cache, role assignments, audit log
   inventory*.py    external vCenter inventory feed (snapshot sync)
+  profile_spec.py  expanded profile spec (+ requester adjustment limits)
+  capacity.py      capacity warnings for requests
+  ipam.py          static IP allocation from network pools
 
 Served at /l/yarp/<env>/<space>/vm-profiles/api/; the SPA calls `api/...`.
 """
@@ -31,13 +34,14 @@ import access  # noqa: F401  registers the `permission:` access resolver
 from admin import router as admin_router
 from catalog import router as catalog_router
 from inventory import router as inventory_router
+from ipam import router as ipam_router
 from lookups import router as lookups_router
 from profiles import router as profiles_router
 from requests_api import router as requests_router
 
 app = create_app(
     title="vm-profiles-api",
-    routers=[admin_router, lookups_router, catalog_router, inventory_router, profiles_router, requests_router],
+    routers=[admin_router, lookups_router, catalog_router, inventory_router, ipam_router, profiles_router, requests_router],
 )
 FastAPIInstrumentor.instrument_app(app)
 

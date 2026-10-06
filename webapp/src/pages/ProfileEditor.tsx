@@ -42,6 +42,7 @@ const emptyForm = (): Form => ({
   vm_role_id: null, operating_system_id: null, vm_size_id: null, vcpu_override: null, ram_gb_override: null,
   vcenter_id: null, cluster_id: null, resource_pool_id: null, vm_folder_id: null, vm_template_id: null,
   naming_pattern: '', notes: '',
+  allowed_size_ids: [], max_extra_disks: 0, max_extra_disk_gb: 0,
   disks: [newDisk(0, true)], nics: [], software: [],
 })
 
@@ -69,6 +70,51 @@ function useDerived(lookups: LookupsType | undefined, form: Form) {
       isWindows: (os?.family ?? 'windows') === 'windows',
     }
   }, [lookups, form])
+}
+
+type NetworkLookup = LookupsType['vcenters'][number]['networks'][number]
+
+const networkLabel = (n: NetworkLookup) =>
+  `${n.name}${n.vlan_id !== null ? ` (VLAN ${n.vlan_id})` : ''}${n.subnet_cidr ? ` · ${n.subnet_cidr}` : ''}` +
+  `${n.ip_free !== null ? ` · ${n.ip_free} ${T.FREE_IPS}` : n.subnet_cidr ? '' : ` · ${T.ADDRESSING_DHCP}`}`
+
+/** What one VM of this profile needs vs. what the cluster reports as free. */
+function CapacitySummary({ form, d }: { form: Form; d: ReturnType<typeof useDerived> }) {
+  if (!d.cluster || !d.size) return <p className="vp-muted">{T.HELP_PICK_CLUSTER_FIRST}</p>
+  const ram = form.ram_gb_override ?? d.size.ram_gb
+  const rows: { label: string; value: string; warn: boolean }[] = []
+  const free = d.cluster.memory_free_gb
+  rows.push({
+    label: `${T.CAPACITY_MEMORY} (${d.cluster.name})`,
+    value: free === null ? `${ram} GB · ${T.CAPACITY_UNKNOWN}` : `${ram} GB / ${free} GB ${T.FREE}`,
+    warn: free !== null && ram > free,
+  })
+  const perDs = new Map<string, number>()
+  for (const disk of form.disks) if (disk.datastore_id) perDs.set(disk.datastore_id, (perDs.get(disk.datastore_id) ?? 0) + disk.size_gb)
+  for (const [id, gb] of perDs) {
+    const ds = d.datastores.find((x) => x.id === id)
+    if (!ds) continue
+    rows.push({
+      label: `${T.CAPACITY_DATASTORE} ${ds.name}`,
+      value: ds.free_gb === null ? `${gb} GB · ${T.CAPACITY_UNKNOWN}` : `${gb} GB / ${ds.free_gb} GB ${T.FREE}`,
+      warn: ds.free_gb !== null && gb > ds.free_gb,
+    })
+  }
+  for (const nic of form.nics) {
+    const n = d.networks.find((x) => x.id === nic.network_id)
+    if (!n) continue
+    rows.push({
+      label: `${T.CAPACITY_IPS} ${n.name}`,
+      value: n.ip_free === null ? T.ADDRESSING_DHCP : `1 / ${n.ip_free} ${T.FREE}`,
+      warn: n.ip_free !== null && n.ip_free < 1,
+    })
+  }
+  return (
+    <Details data={rows.map((r) => ({
+      label: r.label,
+      value: r.warn ? <Badge appearance="warning">{r.value}</Badge> : r.value,
+    }))} />
+  )
 }
 
 /** Shown when the chosen cluster has nothing of a kind attached yet. */
@@ -124,6 +170,7 @@ export function ProfileEditor() {
         ...f,
         vm_role_id: ok(f.vm_role_id, lookups.roles),
         vm_size_id: ok(f.vm_size_id, lookups.sizes),
+        allowed_size_ids: f.allowed_size_ids.filter((id) => lookups.sizes.some((z) => z.id === id)),
         vcenter_id,
         software: f.software.filter((s) => lookups.software.some((x) => x.id === s.software_id)),
       }
@@ -148,7 +195,9 @@ export function ProfileEditor() {
       ...f, cluster_id: id, resource_pool_id: null,
       vm_folder_id: c?.folders.some((x) => x.id === f.vm_folder_id) ? f.vm_folder_id : null,
       disks: f.disks.map((x) => ({ ...x, datastore_id: x.datastore_id && c?.datastore_ids.includes(x.datastore_id) ? x.datastore_id : null })),
-      nics: f.nics.filter((n) => c?.network_ids.includes(n.network_id)),
+      nics: f.nics
+        .filter((n) => c?.network_ids.includes(n.network_id))
+        .map((n) => ({ ...n, alternative_network_ids: n.alternative_network_ids.filter((a) => c?.network_ids.includes(a)) })),
     }))
   }
 
@@ -262,6 +311,19 @@ export function ProfileEditor() {
               <NumberField label={T.FIELD_RAM_OVERRIDE} min={1} value={form.ram_gb_override} disabled={readOnly}
                 help={d.size ? `${T.HELP_PRESET}: ${d.size.ram_gb}` : undefined} onChange={(v) => set('ram_gb_override', v)} />
             </div>
+            <div className="vp-section">
+              <strong>{T.FIELD_ALLOWED_SIZES}</strong>
+              <p className="vp-muted">{T.HELP_ALLOWED_SIZES}</p>
+              <div className="vp-checklist">
+                {(lookups?.sizes ?? []).filter((z) => z.id !== form.vm_size_id).map((z) => (
+                  <CheckboxField key={z.id} name={`size-${z.id}`} disabled={readOnly}
+                    label={`${z.name} — ${z.vcpu} vCPU / ${z.ram_gb} GB`}
+                    checked={form.allowed_size_ids.includes(z.id)}
+                    onChange={(on) => set('allowed_size_ids', on
+                      ? [...form.allowed_size_ids, z.id] : form.allowed_size_ids.filter((x) => x !== z.id))} />
+                ))}
+              </div>
+            </div>
           </div>
         )
       case 'placement':
@@ -323,6 +385,16 @@ export function ProfileEditor() {
               </div>
             )}
             <p className="vp-muted">{T.TOTAL}: {form.disks.reduce((a, x) => a + (x.size_gb || 0), 0)} GB</p>
+            <div className="vp-section">
+              <strong>{T.FIELD_REQUESTER_DISKS}</strong>
+              <p className="vp-muted">{T.HELP_REQUESTER_DISKS}</p>
+              <div className="vp-form-2">
+                <NumberField label={T.FIELD_MAX_EXTRA_DISKS} min={0} value={form.max_extra_disks} disabled={readOnly}
+                  onChange={(v) => set('max_extra_disks', v ?? 0)} />
+                <NumberField label={T.FIELD_MAX_EXTRA_DISK_GB} min={0} value={form.max_extra_disk_gb}
+                  disabled={readOnly || !form.max_extra_disks} onChange={(v) => set('max_extra_disk_gb', v ?? 0)} />
+              </div>
+            </div>
           </div>
         )
       case 'network':
@@ -333,19 +405,34 @@ export function ProfileEditor() {
               <AttachHint vcenterId={form.vcenter_id} message={T.HELP_NO_NETWORKS_ATTACHED} />
             )}
             {form.nics.map((nic, i) => (
-              <div key={i} className="vp-grid-row" style={{ gridTemplateColumns: '2fr 1fr auto' }}>
-                <SelectField label={`${T.FIELD_NETWORK} ${i + 1}`} required value={nic.network_id || null} disabled={readOnly}
-                  options={opt(d.networks, (n) => `${n.name}${n.vlan_id !== null ? ` (VLAN ${n.vlan_id})` : ''}`)}
-                  onChange={(v) => setNic(i, { network_id: v ?? '' })} />
-                <SelectField label={T.FIELD_ADAPTER} allowEmpty={false} value={nic.adapter_type} disabled={readOnly}
-                  options={[{ value: 'vmxnet3', label: 'VMXNET3' }, { value: 'e1000e', label: 'E1000E' }]}
-                  onChange={(v) => setNic(i, { adapter_type: (v ?? 'vmxnet3') as NicFormType['adapter_type'] })} />
-                <Button appearance="text" disabled={readOnly} onClick={() => set('nics', form.nics.filter((_, j) => j !== i))}>{T.ACTION_REMOVE}</Button>
+              <div key={i} className="vp-section">
+                <div className="vp-grid-row" style={{ gridTemplateColumns: '2fr 1fr auto' }}>
+                  <SelectField label={`${T.FIELD_NETWORK} ${i + 1}`} required value={nic.network_id || null} disabled={readOnly}
+                    options={opt(d.networks, networkLabel)}
+                    onChange={(v) => setNic(i, { network_id: v ?? '', alternative_network_ids: nic.alternative_network_ids.filter((a) => a !== v) })} />
+                  <SelectField label={T.FIELD_ADAPTER} allowEmpty={false} value={nic.adapter_type} disabled={readOnly}
+                    options={[{ value: 'vmxnet3', label: 'VMXNET3' }, { value: 'e1000e', label: 'E1000E' }]}
+                    onChange={(v) => setNic(i, { adapter_type: (v ?? 'vmxnet3') as NicFormType['adapter_type'] })} />
+                  <Button appearance="text" disabled={readOnly} onClick={() => set('nics', form.nics.filter((_, j) => j !== i))}>{T.ACTION_REMOVE}</Button>
+                </div>
+                {d.networks.length > 1 && (
+                  <>
+                    <p className="vp-muted">{T.HELP_NIC_ALTERNATIVES}</p>
+                    <div className="vp-checklist">
+                      {d.networks.filter((n) => n.id !== nic.network_id).map((n) => (
+                        <CheckboxField key={n.id} name={`alt-${i}-${n.id}`} disabled={readOnly} label={networkLabel(n)}
+                          checked={nic.alternative_network_ids.includes(n.id)}
+                          onChange={(on) => setNic(i, { alternative_network_ids: on
+                            ? [...nic.alternative_network_ids, n.id] : nic.alternative_network_ids.filter((x) => x !== n.id) })} />
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             ))}
             {!readOnly && form.cluster_id && d.networks.length > 0 && form.nics.length < 10 && (
               <div>
-                <Button appearance="neutral" onClick={() => set('nics', [...form.nics, { nic_order: form.nics.length, network_id: d.networks[0]?.id ?? '', adapter_type: 'vmxnet3' }])}>
+                <Button appearance="neutral" onClick={() => set('nics', [...form.nics, { nic_order: form.nics.length, network_id: d.networks[0]?.id ?? '', adapter_type: 'vmxnet3', alternative_network_ids: [] }])}>
                   {T.ACTION_ADD_NIC}
                 </Button>
               </div>
@@ -418,6 +505,20 @@ export function ProfileEditor() {
                   return `${sw?.name ?? '?'}${s.is_mandatory ? '' : ` (${T.OPTIONAL})`}`
                 }).join(' · ') || undefined },
             ]} />
+            <h2 className="main-heading vp-section">{T.REQUESTER_OPTIONS}</h2>
+            <Details data={[
+              { label: T.FIELD_ALLOWED_SIZES, value: form.allowed_size_ids.length
+                ? form.allowed_size_ids.map((id) => lookups?.sizes.find((z) => z.id === id)?.name ?? '?').join(' · ') : T.NONE_OPTION },
+              { label: T.FIELD_REQUESTER_DISKS, value: form.max_extra_disks
+                ? hydrateTranslation(T.EXTRA_DISKS_SUMMARY, { n: String(form.max_extra_disks), gb: String(form.max_extra_disk_gb) })
+                : T.NONE_OPTION },
+              { label: T.FIELD_NIC_ALTERNATIVES, value: form.nics.some((n) => n.alternative_network_ids.length)
+                ? form.nics.filter((n) => n.alternative_network_ids.length).map((n, i) =>
+                    `NIC ${i + 1}: ${n.alternative_network_ids.map((a) => d.networks.find((x) => x.id === a)?.name ?? '?').join(', ')}`).join(' · ')
+                : T.NONE_OPTION },
+            ]} />
+            <h2 className="main-heading vp-section">{T.CAPACITY_PER_VM}</h2>
+            <CapacitySummary form={form} d={d} />
             {!readOnly && <div className="vp-section"><TextAreaField label={T.FIELD_NOTES} value={form.notes} onChange={(v) => set('notes', v)} /></div>}
             {firstInvalid && <p className="vp-error">{T.FIX_STEP}: {stepLabel(firstInvalid)}</p>}
           </>

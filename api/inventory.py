@@ -30,6 +30,11 @@ router = SecuredRouter(prefix="/inventory")
 MAX_CHANGES_RETURNED = 1000
 
 
+def _s(value: Any) -> str | None:
+    """inet / cidr values come back as ipaddress objects."""
+    return None if value is None else str(value)
+
+
 async def _ensure_company(conn: asyncpg.Connection, acc: Access, body: InventoryIn, dry_run: bool) -> UUID | None:
     ref = body.vcenter.company
     if ref is None:
@@ -141,17 +146,19 @@ async def export_vcenter(
         vcenter_id)
     dcs = await conn.fetch("SELECT id, name, external_moref FROM datacenters WHERE vcenter_id = $1 AND is_active "
                            "ORDER BY name", vcenter_id)
-    clusters = await conn.fetch("SELECT id, datacenter_id, name, external_moref FROM clusters "
-                                "WHERE vcenter_id = $1 AND is_active ORDER BY name", vcenter_id)
+    clusters = await conn.fetch("SELECT id, datacenter_id, name, external_moref, cpu_cores, memory_total_gb, "
+                                "memory_free_gb FROM clusters WHERE vcenter_id = $1 AND is_active ORDER BY name",
+                                vcenter_id)
     pools = await conn.fetch("SELECT p.cluster_id, p.name, p.path, p.external_moref FROM resource_pools p "
                              "JOIN clusters c ON c.id = p.cluster_id WHERE c.vcenter_id = $1 AND p.is_active "
                              "ORDER BY p.name", vcenter_id)
     folders = await conn.fetch("SELECT f.datacenter_id, f.path, f.external_moref FROM vm_folders f "
                                "JOIN datacenters d ON d.id = f.datacenter_id WHERE d.vcenter_id = $1 AND f.is_active "
                                "ORDER BY f.path", vcenter_id)
-    datastores = await conn.fetch("SELECT id, name, type, capacity_gb, external_moref FROM datastores "
+    datastores = await conn.fetch("SELECT id, name, type, capacity_gb, free_gb, external_moref FROM datastores "
                                   "WHERE vcenter_id = $1 AND is_active ORDER BY name", vcenter_id)
-    networks = await conn.fetch("SELECT id, name, type, vlan_id, external_moref FROM networks "
+    networks = await conn.fetch("SELECT id, name, type, vlan_id, subnet_cidr, gateway, dns_servers, dns_domain, "
+                                "ip_pool_start, ip_pool_end, external_moref FROM networks "
                                 "WHERE vcenter_id = $1 AND is_active ORDER BY name", vcenter_id)
     templates = await conn.fetch(
         "SELECT t.name, t.operating_system_id, o.vmware_guest_id, t.os_disk_gb, t.content_library, t.external_moref "
@@ -184,17 +191,21 @@ async def export_vcenter(
             "name": d["name"], "moref": d["external_moref"],
             "folders": [{"path": f["path"], "moref": f["external_moref"]} for f in folders_by[d["id"]]],
             "clusters": [{
-                "name": c["name"], "moref": c["external_moref"],
+                "name": c["name"], "moref": c["external_moref"], "cpu_cores": c["cpu_cores"],
+                "memory_total_gb": c["memory_total_gb"], "memory_free_gb": c["memory_free_gb"],
                 "resource_pools": [{"name": p["name"], "path": p["path"], "moref": p["external_moref"]}
                                    for p in pools_by[c["id"]]],
                 "datastores": sorted(r["name"] for r in ds_by[c["id"]]),
                 "networks": sorted(r["name"] for r in net_by[c["id"]]),
             } for c in clusters_by[d["id"]]],
         } for d in dcs],
-        "datastores": [{"name": d["name"], "type": d["type"], "capacity_gb": d["capacity_gb"],
+        "datastores": [{"name": d["name"], "type": d["type"], "capacity_gb": d["capacity_gb"], "free_gb": d["free_gb"],
                         "moref": d["external_moref"]} for d in datastores],
-        "networks": [{"name": n["name"], "type": n["type"], "vlan_id": n["vlan_id"], "moref": n["external_moref"]}
-                     for n in networks],
+        "networks": [{
+            "name": n["name"], "type": n["type"], "vlan_id": n["vlan_id"], "moref": n["external_moref"],
+            "subnet_cidr": _s(n["subnet_cidr"]), "gateway": _s(n["gateway"]), "dns_servers": list(n["dns_servers"]),
+            "dns_domain": n["dns_domain"], "ip_pool_start": _s(n["ip_pool_start"]), "ip_pool_end": _s(n["ip_pool_end"]),
+        } for n in networks],
         "templates": [{"name": t["name"], "operating_system_id": t["operating_system_id"],
                        "guest_id": t["vmware_guest_id"] or None, "os_disk_gb": t["os_disk_gb"],
                        "content_library": t["content_library"], "moref": t["external_moref"]} for t in templates],

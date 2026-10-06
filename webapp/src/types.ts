@@ -42,6 +42,10 @@ export interface ClusterLookupType {
   id: UUID
   name: string
   datacenter_id: UUID
+  cpu_cores: number | null
+  memory_total_gb: number | null
+  memory_free_gb: number | null
+  capacity_updated_at: string | null
   resource_pools: { id: UUID; name: string; path: string }[]
   datastore_ids: UUID[]
   network_ids: UUID[]
@@ -58,8 +62,17 @@ export interface VcenterLookupType {
     clusters: ClusterLookupType[]
     folders: { id: UUID; path: string }[]
   }[]
-  datastores: { id: UUID; name: string; type: string; capacity_gb: number | null }[]
-  networks: { id: UUID; name: string; type: string; vlan_id: number | null }[]
+  datastores: { id: UUID; name: string; type: string; capacity_gb: number | null; free_gb: number | null }[]
+  networks: {
+    id: UUID
+    name: string
+    type: string
+    vlan_id: number | null
+    subnet_cidr: string | null
+    gateway: string | null
+    ip_pool_start: string | null
+    ip_free: number | null
+  }[]
   templates: { id: UUID; name: string; operating_system_id: UUID; os_disk_gb: number | null }[]
 }
 
@@ -86,6 +99,7 @@ export interface NicFormType {
   nic_order: number
   network_id: UUID
   adapter_type: 'vmxnet3' | 'e1000e'
+  alternative_network_ids: UUID[]
 }
 
 export interface SoftwareFormType {
@@ -111,6 +125,9 @@ export interface ProfileFormType {
   vm_template_id: UUID | null
   naming_pattern: string
   notes: string
+  allowed_size_ids: UUID[]
+  max_extra_disks: number
+  max_extra_disk_gb: number
   disks: DiskFormType[]
   nics: NicFormType[]
   software: SoftwareFormType[]
@@ -161,7 +178,7 @@ export interface ExpandedProfileType {
   }
   disks: (Omit<DiskFormType, 'datastore_id'> & { datastore: Ref | null })[]
   disk_total_gb: number
-  nics: { nic_order: number; adapter_type: string; network: Ref & { vlan_id: number | null; type: string } }[]
+  nics: { nic_order: number; adapter_type: string; network: NetworkInfoType }[]
   software: {
     id: UUID
     name: string
@@ -176,7 +193,56 @@ export interface ExpandedProfileType {
   naming_pattern: string
   notes: string
   warnings: string[]
-  request?: { hostname: string; quantity: number }
+  adjustable?: {
+    sizes: SizeOptionType[]
+    max_extra_disks: number
+    max_extra_disk_gb: number
+    datastores: { id: UUID; name: string; free_gb: number | null }[]
+    nic_options: { nic_order: number; networks: NetworkInfoType[] }[]
+  }
+  request?: { hostname: string; quantity: number; hostnames: string[] }
+  adjustments?: {
+    size?: { from: string; to: string }
+    extra_disks?: { mount_point: string; size_gb: number }[]
+    networks?: { nic_order: number; from: string; to: string }[]
+    excluded_software?: string[]
+  }
+  capacity_check?: { checked_at: string; warnings: string[] }
+  instances?: InstanceType[]
+}
+
+export interface SizeOptionType {
+  id: UUID
+  name: string
+  vcpu: number
+  cores_per_socket: number
+  ram_gb: number
+}
+
+export interface NetworkInfoType {
+  id: UUID
+  name: string
+  vlan_id: number | null
+  type: string
+  addressing: 'static' | 'dhcp'
+  subnet_cidr: string | null
+  gateway: string | null
+  dns_servers: string[]
+  dns_domain: string
+}
+
+export interface InstanceType {
+  hostname: string
+  nics: {
+    nic_order: number
+    network_name: string
+    addressing: 'static' | 'dhcp'
+    ip: string | null
+    prefix_length: number | null
+    gateway: string | null
+    dns_servers: string[]
+    dns_domain: string
+  }[]
 }
 
 export interface RequestListType extends Row {
@@ -199,5 +265,6 @@ export interface RequestDetailType extends RequestListType {
   status_reason: string
   spec: ExpandedProfileType
   can_decide: boolean
+  capacity_now?: string[]
   events: { from_status: string; to_status: string; user_name: string; comment: string; created_at: string }[]
 }

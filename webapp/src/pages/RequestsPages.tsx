@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Badge, BaseTable, Button, Details, Modal, Spinner, Title, T, dynamicTranslation } from '@nttdsp/react-components'
+import { Badge, BaseTable, Button, Details, Modal, Spinner, Title, T, dynamicTranslation, hydrateTranslation } from '@nttdsp/react-components'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type UUID } from '../api'
 import { useCompanies, useMe } from '../hooks'
@@ -33,7 +33,8 @@ export function SpecDetails({ spec }: { spec: ExpandedProfileType }) {
         { label: T.FIELD_POOL, value: spec.placement.resource_pool?.name },
         { label: T.FIELD_FOLDER, value: spec.placement.folder?.path },
         { label: T.FIELD_TEMPLATE, value: spec.placement.template?.name },
-        { label: T.STEP_NETWORK, value: spec.nics.map((n) => `${n.network.name}${n.network.vlan_id !== null ? ` (VLAN ${n.network.vlan_id})` : ''}`).join(' · ') },
+        { label: T.STEP_NETWORK, value: spec.nics.map((n) => `${n.network.name}${n.network.vlan_id !== null ? ` (VLAN ${n.network.vlan_id})` : ''}` +
+            ` · ${n.network.addressing === 'static' ? `${n.network.subnet_cidr ?? ''}${n.network.gateway ? ` gw ${n.network.gateway}` : ''}` : T.ADDRESSING_DHCP}`).join(' · ') },
       ]} />
       <h2 className="main-heading vp-section">{T.STEP_DISKS} — {spec.disk_total_gb} GB</h2>
       <BaseTable
@@ -59,6 +60,36 @@ export function SpecDetails({ spec }: { spec: ExpandedProfileType }) {
 // New request
 // ---------------------------------------------------------------------------
 
+interface ExtraDiskForm {
+  size_gb: number | null
+  mount_point: string
+  label: string
+  datastore_id: UUID | null
+}
+
+const HOSTNAME_RE = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/
+
+function useDebounced<V>(value: V, delay = 400): V {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), delay)
+    return () => clearTimeout(t)
+  }, [value, delay])
+  return v
+}
+
+export function CapacityWarnings({ title, warnings }: { title: string; warnings: string[] | undefined }) {
+  if (!warnings) return null
+  return warnings.length === 0 ? (
+    <p className="vp-muted">{title}: {T.CAPACITY_OK}</p>
+  ) : (
+    <div className="vp-section">
+      <Badge appearance="warning">{title}</Badge>
+      <ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+    </div>
+  )
+}
+
 export function NewRequestPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -77,6 +108,9 @@ export function NewRequestPage() {
   const [quantity, setQuantity] = useState<number | null>(1)
   const [justification, setJustification] = useState('')
   const [excluded, setExcluded] = useState<Set<UUID>>(new Set())
+  const [sizeId, setSizeId] = useState<UUID | null>(null)
+  const [extraDisks, setExtraDisks] = useState<ExtraDiskForm[]>([])
+  const [nicNetworks, setNicNetworks] = useState<Record<number, UUID>>({})
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
 
@@ -85,20 +119,44 @@ export function NewRequestPage() {
     queryFn: () => api.get<ProfileListType[]>('/profiles', { for_company: companyId }),
     enabled: !!companyId,
   })
-  const spec = useQuery({
+  const base = useQuery({
     queryKey: ['expanded', profileId],
     queryFn: () => api.get<ExpandedProfileType>(`/profiles/${profileId}/expanded`),
     enabled: !!profileId,
+  })
+  const adj = base.data?.adjustable
+
+  const pick = (id: UUID) => {
+    setProfileId(id)
+    setExcluded(new Set())
+    setSizeId(null)
+    setExtraDisks([])
+    setNicNetworks({})
+  }
+
+  // The server builds the exact spec (adjustments validated) + capacity warnings.
+  const body = {
+    company_id: companyId, vm_profile_id: profileId,
+    hostname: HOSTNAME_RE.test(hostname) ? hostname : 'preview', quantity: quantity ?? 1, justification,
+    excluded_software_ids: [...excluded],
+    vm_size_id: sizeId,
+    extra_disks: extraDisks.filter((x) => x.size_gb && x.mount_point.trim())
+      .map((x) => ({ ...x, datastore_id: x.datastore_id || null })),
+    nic_networks: Object.entries(nicNetworks).map(([order, network_id]) => ({ nic_order: Number(order), network_id })),
+  }
+  const debounced = useDebounced(JSON.stringify(body))
+  const preview = useQuery({
+    queryKey: ['request-preview', debounced],
+    queryFn: () => api.post<ExpandedProfileType>('/requests/preview', JSON.parse(debounced)),
+    enabled: !!profileId && !!companyId,
+    retry: false,
   })
 
   const submit = async () => {
     setBusy(true)
     setError(null)
     try {
-      const { id } = await api.post<{ id: UUID }>('/requests', {
-        company_id: companyId, vm_profile_id: profileId, hostname, quantity: quantity ?? 1, justification,
-        excluded_software_ids: [...excluded],
-      })
+      const { id } = await api.post<{ id: UUID }>('/requests', { ...body, hostname })
       await qc.invalidateQueries({ queryKey: ['requests'] })
       navigate(`/requests/${id}`)
     } catch (e) {
@@ -107,6 +165,10 @@ export function NewRequestPage() {
       setBusy(false)
     }
   }
+
+  const spec = preview.data ?? base.data
+  const setDisk = (i: number, patch: Partial<ExtraDiskForm>) =>
+    setExtraDisks((list) => list.map((x, j) => (j === i ? { ...x, ...patch } : x)))
 
   return (
     <div className="grid-container--fluid vp-page">
@@ -139,28 +201,76 @@ export function NewRequestPage() {
             loading={profiles.isLoading}
             noDataMessage={T.NO_PROFILES_FOR_COMPANY}
             rowActions={[{ id: 'pick', label: T.ACTION_SELECT,
-              onSelect: (_e: unknown, { row }: { row: ProfileListType }) => { setProfileId(row.id); setExcluded(new Set()) } }]}
+              onSelect: (_e: unknown, { row }: { row: ProfileListType }) => pick(row.id) }]}
           />
         </>
       )}
 
       {profileId && (
-        spec.isLoading || !spec.data ? <Spinner /> : (
+        !base.data || !spec ? <Spinner /> : (
           <>
-            <h2 className="main-heading">{spec.data.name}</h2>
-            {spec.data.description && <p>{spec.data.description}</p>}
-            <SpecDetails spec={spec.data} />
+            <h2 className="main-heading">{base.data.name}</h2>
+            {base.data.description && <p>{base.data.description}</p>}
+
+            {adj && (adj.sizes.length > 1 || adj.max_extra_disks > 0 || adj.nic_options.length > 0) && (
+              <>
+                <h2 className="main-heading vp-section">{T.ADJUST_TITLE}</h2>
+                <div className="vp-form">
+                  {adj.sizes.length > 1 && (
+                    <SelectField label={T.FIELD_SIZE} allowEmpty={false} value={sizeId ?? adj.sizes[0].id}
+                      options={adj.sizes.map((z) => ({ value: z.id, label: `${z.name} — ${z.vcpu} vCPU / ${z.ram_gb} GB` }))}
+                      onChange={(v) => setSizeId(v === adj.sizes[0].id ? null : v)} />
+                  )}
+                  {adj.nic_options.map((o) => (
+                    <SelectField key={o.nic_order} label={`${T.FIELD_NETWORK} ${o.nic_order + 1}`} allowEmpty={false}
+                      value={nicNetworks[o.nic_order] ?? o.networks[0].id}
+                      options={o.networks.map((n) => ({ value: n.id, label:
+                        `${n.name}${n.vlan_id !== null ? ` (VLAN ${n.vlan_id})` : ''} · ${n.addressing === 'static' ? n.subnet_cidr : T.ADDRESSING_DHCP}` }))}
+                      onChange={(v) => setNicNetworks((m) => ({ ...m, [o.nic_order]: v ?? o.networks[0].id }))} />
+                  ))}
+                  {adj.max_extra_disks > 0 && (
+                    <div>
+                      <strong>{T.EXTRA_DISKS}</strong>
+                      <p className="vp-muted">
+                        {hydrateTranslation(T.EXTRA_DISKS_SUMMARY, { n: String(adj.max_extra_disks), gb: String(adj.max_extra_disk_gb) })}
+                      </p>
+                      {extraDisks.map((x, i) => (
+                        <div key={i} className="vp-grid-row" style={{ gridTemplateColumns: '1fr 1fr 1fr 1.4fr auto' }}>
+                          <TextField label={T.FIELD_MOUNT} required value={x.mount_point} onChange={(v) => setDisk(i, { mount_point: v })} />
+                          <NumberField label={T.FIELD_SIZE_GB} required min={1} value={x.size_gb} onChange={(v) => setDisk(i, { size_gb: v })} />
+                          <TextField label={T.FIELD_DISK_LABEL} value={x.label} onChange={(v) => setDisk(i, { label: v })} />
+                          <SelectField label={T.FIELD_DATASTORE} value={x.datastore_id} emptyLabel={T.DATASTORE_DEFAULT}
+                            options={adj.datastores.map((d) => ({ value: d.id, label:
+                              `${d.name}${d.free_gb !== null ? ` · ${d.free_gb} GB ${T.FREE}` : ''}` }))}
+                            onChange={(v) => setDisk(i, { datastore_id: v })} />
+                          <Button appearance="text" onClick={() => setExtraDisks((l) => l.filter((_, j) => j !== i))}>{T.ACTION_REMOVE}</Button>
+                        </div>
+                      ))}
+                      {extraDisks.length < adj.max_extra_disks && (
+                        <Button appearance="neutral" onClick={() => setExtraDisks((l) => [...l, {
+                          size_gb: Math.min(100, adj.max_extra_disk_gb), mount_point: '', label: '', datastore_id: null }])}>
+                          {T.ACTION_ADD_DISK}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            <h2 className="main-heading vp-section">{T.REQUEST_SUMMARY}</h2>
+            <SpecDetails spec={spec} />
             <h2 className="main-heading vp-section">{T.STEP_SOFTWARE}</h2>
             <div className="vp-checklist">
-              {spec.data.software.length === 0 && <p className="vp-muted">{T.NO_SOFTWARE}</p>}
-              {spec.data.software.map((s) => (
-                <CheckboxField key={s.id} name={`rq-sw-${s.id}`} disabled={s.is_mandatory}
-                  checked={!excluded.has(s.id)}
-                  label={<>{s.name} {s.version} {s.is_mandatory ? <Badge appearance="secondary">{T.FIELD_MANDATORY}</Badge> : <Badge appearance="info">{T.OPTIONAL}</Badge>}</>}
+              {base.data.software.length === 0 && <p className="vp-muted">{T.NO_SOFTWARE}</p>}
+              {base.data.software.map((sw) => (
+                <CheckboxField key={sw.id} name={`rq-sw-${sw.id}`} disabled={sw.is_mandatory}
+                  checked={!excluded.has(sw.id)}
+                  label={<>{sw.name} {sw.version} {sw.is_mandatory ? <Badge appearance="secondary">{T.FIELD_MANDATORY}</Badge> : <Badge appearance="info">{T.OPTIONAL}</Badge>}</>}
                   onChange={(on) => {
                     const next = new Set(excluded)
-                    if (on) next.delete(s.id)
-                    else next.add(s.id)
+                    if (on) next.delete(sw.id)
+                    else next.add(sw.id)
                     setExcluded(next)
                   }} />
               ))}
@@ -168,14 +278,22 @@ export function NewRequestPage() {
             <h2 className="main-heading vp-section">{T.REQUEST_DETAILS}</h2>
             <div className="vp-form-2">
               <TextField label={T.FIELD_HOSTNAME} required value={hostname} onChange={setHostname}
-                help={spec.data.naming_pattern ? `${T.HELP_NAMING_PATTERN_SHORT}: ${spec.data.naming_pattern}` : T.HELP_HOSTNAME} />
+                help={base.data.naming_pattern ? `${T.HELP_NAMING_PATTERN_SHORT}: ${base.data.naming_pattern}` : T.HELP_HOSTNAME} />
               <NumberField label={T.FIELD_QUANTITY} required min={1} value={quantity} onChange={setQuantity} />
             </div>
+            {spec.request && (quantity ?? 1) > 1 && HOSTNAME_RE.test(hostname) && (
+              <p className="vp-muted">{T.HOSTNAMES}: {spec.request.hostnames.join(', ')}</p>
+            )}
             <TextAreaField label={T.FIELD_JUSTIFICATION} value={justification} onChange={setJustification} />
+            {preview.isFetching && <p className="vp-muted">{T.CHECKING}</p>}
+            {preview.error && <ErrorText error={preview.error} />}
+            <CapacityWarnings title={T.CAPACITY_CHECK} warnings={preview.data?.capacity_check?.warnings} />
             <ErrorText error={error} />
             <div className="vp-actions">
               <Button appearance="neutral" onClick={() => setProfileId(null)}>{T.ACTION_CHANGE_PROFILE}</Button>
-              <Button appearance="primary" disabled={busy || !hostname.trim()} onClick={submit}>{T.ACTION_SUBMIT}</Button>
+              <Button appearance="primary" disabled={busy || !HOSTNAME_RE.test(hostname) || !!preview.error} onClick={submit}>
+                {T.ACTION_SUBMIT}
+              </Button>
             </div>
           </>
         )
@@ -280,6 +398,43 @@ export function RequestDetailPage() {
       <h2 className="main-heading vp-section">{T.FROZEN_SPEC}</h2>
       <p className="vp-muted">{T.HELP_FROZEN_SPEC}</p>
       <SpecDetails spec={data.spec} />
+      {data.spec.adjustments && Object.keys(data.spec.adjustments).length > 0 && (
+        <>
+          <h2 className="main-heading vp-section">{T.ADJUSTMENTS_MADE}</h2>
+          <Details data={[
+            { label: T.FIELD_SIZE, value: data.spec.adjustments.size
+              ? `${data.spec.adjustments.size.from} → ${data.spec.adjustments.size.to}` : undefined },
+            { label: T.EXTRA_DISKS, value: data.spec.adjustments.extra_disks
+              ?.map((x) => `${x.mount_point} ${x.size_gb} GB`).join(' · ') },
+            { label: T.STEP_NETWORK, value: data.spec.adjustments.networks
+              ?.map((x) => `NIC ${x.nic_order + 1}: ${x.from} → ${x.to}`).join(' · ') },
+            { label: T.EXCLUDED_SOFTWARE, value: data.spec.adjustments.excluded_software?.join(', ') },
+          ]} />
+        </>
+      )}
+      <CapacityWarnings title={T.CAPACITY_AT_SUBMIT} warnings={data.spec.capacity_check?.warnings} />
+      <CapacityWarnings title={T.CAPACITY_NOW} warnings={data.capacity_now} />
+      {data.spec.instances && (
+        <>
+          <h2 className="main-heading vp-section">{T.VMS_AND_IPS}</h2>
+          <BaseTable
+            columns={[
+              { accessor: 'hostname', Header: T.FIELD_HOSTNAME, visible: true },
+              { accessor: 'network_name', Header: T.FIELD_NETWORK, visible: true },
+              { accessor: 'ip', Header: T.COL_IP, visible: true,
+                Cell: ({ row }: { row: Record<string, unknown> }) => row.addressing === 'static'
+                  ? <>{`${row.ip as string}/${row.prefix_length as number}`}</> : <Badge appearance="secondary">{T.ADDRESSING_DHCP}</Badge> },
+              { accessor: 'gateway', Header: T.FIELD_GATEWAY, visible: true },
+              { accessor: 'dns', Header: T.FIELD_DNS_SERVERS, visible: true },
+            ]}
+            data={data.spec.instances.flatMap((inst) => inst.nics.map((n) => ({
+              hostname: inst.hostname, network_name: n.network_name, addressing: n.addressing, ip: n.ip,
+              prefix_length: n.prefix_length, gateway: n.gateway ?? '', dns: n.dns_servers.join(', '),
+            })))}
+            noDataMessage={T.NO_DATA}
+          />
+        </>
+      )}
       <h2 className="main-heading vp-section">{T.STEP_SOFTWARE}</h2>
       <BaseTable
         columns={[

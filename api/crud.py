@@ -22,6 +22,7 @@ never from user input, so the f-string SQL here is allowlisted by design.
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -85,6 +86,8 @@ class Resource:
     label_column: str = "name"
     has_audit_columns: bool = False
     before_create: Hook | None = None
+    # When any of these is set on create/update, stamp capacity_updated_at.
+    capacity_columns: list[str] = field(default_factory=list)
 
 
 def db_errors(exc: Exception) -> Exception:
@@ -123,7 +126,8 @@ async def owner_for_create(conn: asyncpg.Connection, res: Resource, data: dict[s
 
 def register(router: SecuredRouter, res: Resource) -> None:
     owner = OWNER_SQL[res.ownership]
-    select_cols = ", ".join(f"t.{c}" for c in ["id", *res.columns, "is_active", "created_at"])
+    stamp = ["capacity_updated_at"] if res.capacity_columns else []
+    select_cols = ", ".join(f"t.{c}" for c in ["id", *res.columns, *stamp, "is_active", "created_at"])
     extras = "".join(f", {e}" for e in res.extra_select)
     base_select = (
         f"SELECT {select_cols}, {owner} AS owner_company_id, "  # noqa: S608
@@ -182,6 +186,9 @@ def register(router: SecuredRouter, res: Resource) -> None:
         if res.has_audit_columns:
             cols.append("created_by")
             data["created_by"] = acc.user_id
+        if any(data.get(c) is not None for c in res.capacity_columns):
+            cols.append("capacity_updated_at")
+            data["capacity_updated_at"] = datetime.now(UTC)
         placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
         try:
             new_id = await conn.fetchval(
@@ -212,6 +219,8 @@ def register(router: SecuredRouter, res: Resource) -> None:
             values.append(acc.user_id)
             sets.append(f"updated_by = ${len(values) + 1}")
             sets.append("updated_at = now()")
+        if any(data.get(c) is not None for c in res.capacity_columns):
+            sets.append("capacity_updated_at = now()")
         try:
             await conn.execute(
                 f"UPDATE {res.table} SET {', '.join(sets)} WHERE id = $1", item_id, *values  # noqa: S608

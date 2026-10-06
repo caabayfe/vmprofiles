@@ -107,9 +107,18 @@ CREATE TABLE IF NOT EXISTS clusters (
     datacenter_id  uuid        NOT NULL,
     name           text        NOT NULL,
     external_moref text,
+    -- Capacity (from the inventory feed or typed in); NULL = unknown.
+    cpu_cores           integer,
+    memory_total_gb     integer,
+    memory_free_gb      integer,
+    capacity_updated_at timestamptz,
     is_active      boolean     NOT NULL DEFAULT true,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT clusters_pkey PRIMARY KEY (id),
+    CONSTRAINT clusters_capacity_check CHECK (
+        (cpu_cores IS NULL OR cpu_cores > 0)
+        AND (memory_total_gb IS NULL OR memory_total_gb > 0)
+        AND (memory_free_gb IS NULL OR memory_free_gb >= 0)),
     -- vcenter_id is denormalised so composite FKs below can pin a child to
     -- the same vCenter; this FK keeps it honest with the datacenter's.
     CONSTRAINT clusters_datacenter_fkey
@@ -142,10 +151,13 @@ CREATE TABLE IF NOT EXISTS datastores (
     name           text        NOT NULL,
     type           text        NOT NULL DEFAULT 'vmfs',
     capacity_gb    integer,
+    free_gb        integer,
+    capacity_updated_at timestamptz,
     external_moref text,
     is_active      boolean     NOT NULL DEFAULT true,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT datastores_pkey PRIMARY KEY (id),
+    CONSTRAINT datastores_free_check CHECK (free_gb IS NULL OR free_gb >= 0),
     CONSTRAINT datastores_vcenter_id_fkey
         FOREIGN KEY (vcenter_id) REFERENCES vcenters (id) ON DELETE RESTRICT,
     CONSTRAINT datastores_type_check CHECK (type IN ('vmfs', 'nfs', 'vsan', 'vvol')),
@@ -175,10 +187,22 @@ CREATE TABLE IF NOT EXISTS networks (
     name           text        NOT NULL,
     type           text        NOT NULL DEFAULT 'dvportgroup',
     vlan_id        integer,
+    -- IP details. No pool = DHCP / addressed outside this app.
+    subnet_cidr    cidr,
+    gateway        inet,
+    dns_servers    text[]      NOT NULL DEFAULT '{}',
+    dns_domain     text        NOT NULL DEFAULT '',
+    ip_pool_start  inet,
+    ip_pool_end    inet,
     external_moref text,
     is_active      boolean     NOT NULL DEFAULT true,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT networks_pkey PRIMARY KEY (id),
+    CONSTRAINT networks_gateway_check CHECK (gateway IS NULL OR (subnet_cidr IS NOT NULL AND gateway << subnet_cidr)),
+    CONSTRAINT networks_pool_check CHECK (
+        (ip_pool_start IS NULL) = (ip_pool_end IS NULL)
+        AND (ip_pool_start IS NULL OR (subnet_cidr IS NOT NULL AND ip_pool_start << subnet_cidr
+             AND ip_pool_end << subnet_cidr AND ip_pool_start <= ip_pool_end))),
     CONSTRAINT networks_vcenter_id_fkey
         FOREIGN KEY (vcenter_id) REFERENCES vcenters (id) ON DELETE RESTRICT,
     CONSTRAINT networks_type_check CHECK (type IN ('standard', 'dvportgroup', 'nsx')),
@@ -353,6 +377,9 @@ CREATE TABLE IF NOT EXISTS vm_profiles (
     vm_folder_id        uuid,
     vm_template_id      uuid,
     naming_pattern      text        NOT NULL DEFAULT '',
+    -- Requester adjustments: extra data disks allowed on top of the profile's.
+    max_extra_disks     integer     NOT NULL DEFAULT 0,
+    max_extra_disk_gb   integer     NOT NULL DEFAULT 0,
     notes               text        NOT NULL DEFAULT '',
     created_by          uuid        NOT NULL,
     created_at          timestamptz NOT NULL DEFAULT now(),
@@ -362,6 +389,7 @@ CREATE TABLE IF NOT EXISTS vm_profiles (
     CONSTRAINT vm_profiles_status_check CHECK (status IN ('draft', 'active', 'archived')),
     CONSTRAINT vm_profiles_vcpu_override_check CHECK (vcpu_override IS NULL OR vcpu_override > 0),
     CONSTRAINT vm_profiles_ram_override_check CHECK (ram_gb_override IS NULL OR ram_gb_override > 0),
+    CONSTRAINT vm_profiles_extra_disks_check CHECK (max_extra_disks BETWEEN 0 AND 20 AND max_extra_disk_gb >= 0),
     CONSTRAINT vm_profiles_company_id_fkey
         FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE RESTRICT,
     CONSTRAINT vm_profiles_vm_role_id_fkey
@@ -446,6 +474,23 @@ CREATE TABLE IF NOT EXISTS vm_profile_nics (
 CREATE INDEX IF NOT EXISTS vm_profile_nics_profile_cluster_idx ON vm_profile_nics (vm_profile_id, cluster_id);
 CREATE INDEX IF NOT EXISTS vm_profile_nics_cluster_network_idx ON vm_profile_nics (cluster_id, network_id);
 
+-- Networks a requester may pick instead of the NIC's default (all attached
+-- to the profile's cluster). Rewritten with the NICs on every profile save.
+CREATE TABLE IF NOT EXISTS vm_profile_nic_options (
+    vm_profile_id uuid    NOT NULL,
+    cluster_id    uuid    NOT NULL,
+    nic_order     integer NOT NULL,
+    network_id    uuid    NOT NULL,
+    CONSTRAINT vm_profile_nic_options_pkey PRIMARY KEY (vm_profile_id, nic_order, network_id),
+    CONSTRAINT vm_profile_nic_options_profile_fkey
+        FOREIGN KEY (vm_profile_id, cluster_id) REFERENCES vm_profiles (id, cluster_id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT vm_profile_nic_options_network_fkey
+        FOREIGN KEY (cluster_id, network_id) REFERENCES clusters_networks (cluster_id, network_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS vm_profile_nic_options_profile_cluster_idx ON vm_profile_nic_options (vm_profile_id, cluster_id);
+CREATE INDEX IF NOT EXISTS vm_profile_nic_options_cluster_network_idx ON vm_profile_nic_options (cluster_id, network_id);
+
 CREATE TABLE IF NOT EXISTS vm_profiles_software (
     vm_profile_id uuid    NOT NULL,
     software_id   uuid    NOT NULL,
@@ -458,6 +503,18 @@ CREATE TABLE IF NOT EXISTS vm_profiles_software (
         FOREIGN KEY (software_id) REFERENCES software (id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS vm_profiles_software_software_id_idx ON vm_profiles_software (software_id);
+
+-- Size presets a requester may switch to (the profile's own size is always allowed).
+CREATE TABLE IF NOT EXISTS vm_profiles_allowed_sizes (
+    vm_profile_id uuid NOT NULL,
+    vm_size_id    uuid NOT NULL,
+    CONSTRAINT vm_profiles_allowed_sizes_pkey PRIMARY KEY (vm_profile_id, vm_size_id),
+    CONSTRAINT vm_profiles_allowed_sizes_profile_fkey
+        FOREIGN KEY (vm_profile_id) REFERENCES vm_profiles (id) ON DELETE CASCADE,
+    CONSTRAINT vm_profiles_allowed_sizes_size_fkey
+        FOREIGN KEY (vm_size_id) REFERENCES vm_sizes (id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS vm_profiles_allowed_sizes_size_idx ON vm_profiles_allowed_sizes (vm_size_id);
 
 -- ---------------------------------------------------------------------------
 -- Provisioning requests
@@ -559,3 +616,30 @@ CREATE TABLE IF NOT EXISTS inventory_syncs (
 );
 CREATE INDEX IF NOT EXISTS inventory_syncs_vcenter_created_idx ON inventory_syncs (vcenter_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS inventory_syncs_created_idx ON inventory_syncs (created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- IP allocations (static addressing from a network's pool)
+-- ---------------------------------------------------------------------------
+-- kind 'request': assigned to a VM of an approved request.
+-- kind 'reserved': used outside this app; an admin blocks it from the pool.
+CREATE TABLE IF NOT EXISTS ip_allocations (
+    id            uuid        NOT NULL DEFAULT gen_random_uuid(),
+    network_id    uuid        NOT NULL,
+    ip            inet        NOT NULL,
+    kind          text        NOT NULL,
+    vm_request_id uuid,
+    hostname      text        NOT NULL DEFAULT '',
+    nic_order     integer,
+    note          text        NOT NULL DEFAULT '',
+    created_by    uuid        NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ip_allocations_pkey PRIMARY KEY (id),
+    CONSTRAINT ip_allocations_network_fkey
+        FOREIGN KEY (network_id) REFERENCES networks (id) ON DELETE RESTRICT,
+    CONSTRAINT ip_allocations_request_fkey
+        FOREIGN KEY (vm_request_id) REFERENCES vm_requests (id) ON DELETE CASCADE,
+    CONSTRAINT ip_allocations_kind_check CHECK (kind IN ('request', 'reserved')),
+    CONSTRAINT ip_allocations_request_kind_check CHECK ((kind = 'request') = (vm_request_id IS NOT NULL)),
+    CONSTRAINT ip_allocations_network_ip_uq UNIQUE (network_id, ip)
+);
+CREATE INDEX IF NOT EXISTS ip_allocations_request_idx ON ip_allocations (vm_request_id);
