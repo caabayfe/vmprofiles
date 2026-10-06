@@ -18,7 +18,7 @@ const vcentersConfig = (): ResourceConfig => ({
   columns: [
     {
       accessor: 'name', Header: T.COL_NAME,
-      Cell: ({ row }) => <Link to={`/infrastructure/${row.original.id as string}`}>{row.original.name as string}</Link>,
+      Cell: ({ row }) => <Link to={`/infrastructure/${row.id as string}`}>{row.name as string}</Link>,
     },
     { accessor: 'fqdn', Header: T.COL_FQDN },
     { accessor: 'description', Header: T.COL_DESCRIPTION },

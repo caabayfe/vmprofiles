@@ -22,7 +22,7 @@ export interface FieldDef {
 export interface ColumnDef {
   accessor: string
   Header: string
-  Cell?: (props: { value: unknown; row: { original: Row } }) => ReactNode
+  Cell?: (props: { value: unknown; row: Row }) => ReactNode
   width?: string
 }
 
@@ -127,8 +127,8 @@ export function ResourceTable({
     ...(config.scoped
       ? [{
           accessor: 'company_id', Header: T.COL_SCOPE, visible: true,
-          Cell: ({ row }: { row: { original: Row } }) => (
-            <ScopeBadge companyName={row.original.owner_company_name as string | null} />
+          Cell: ({ row }: { row: Row }) => (
+            <ScopeBadge companyName={row.owner_company_name as string | null} />
           ),
         }]
       : []),

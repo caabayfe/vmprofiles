@@ -130,7 +130,7 @@ export function NewRequestPage() {
               { accessor: 'role_name', Header: T.COL_ROLE, visible: true },
               { accessor: 'os_name', Header: T.COL_OS, visible: true },
               { accessor: 'vcpu', Header: T.COL_COMPUTE, visible: true,
-                Cell: ({ row }: { row: { original: ProfileListType } }) => <>{row.original.vcpu} vCPU · {row.original.ram_gb} GB</> },
+                Cell: ({ row }: { row: ProfileListType }) => <>{row.vcpu} vCPU · {row.ram_gb} GB</> },
               { accessor: 'disk_total_gb', Header: T.COL_DISKS, visible: true,
                 Cell: ({ value }: { value: number }) => <>{value} GB</> },
               { accessor: 'description', Header: T.COL_DESCRIPTION, visible: true },
@@ -208,7 +208,7 @@ export function RequestsPage({ view }: { view: 'mine' | 'pending' | 'all' }) {
       <BaseTable
         columns={[
           { accessor: 'hostname', Header: T.FIELD_HOSTNAME, visible: true,
-            Cell: ({ row }: { row: { original: RequestListType } }) => <Link to={`/requests/${row.original.id}`}>{row.original.hostname}</Link> },
+            Cell: ({ row }: { row: RequestListType }) => <Link to={`/requests/${row.id}`}>{row.hostname}</Link> },
           { accessor: 'quantity', Header: T.FIELD_QUANTITY, visible: true, width: '80px' },
           { accessor: 'profile_name', Header: T.COL_PROFILE, visible: true },
           { accessor: 'company_name', Header: T.FIELD_COMPANY, visible: true },

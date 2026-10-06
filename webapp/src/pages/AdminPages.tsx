@@ -193,8 +193,8 @@ export function AuditPage() {
         columns={[
           { accessor: 'created_at', Header: T.COL_WHEN, visible: true, Cell: ({ value }: { value: string }) => <>{new Date(value).toLocaleString()}</> },
           { accessor: 'user_name', Header: T.COL_BY, visible: true,
-            Cell: ({ row }: { row: { original: Row } }) => (
-              <>{(row.original.user_name as string) || (row.original.user_id as string)}{row.original.user_impersonation ? <> <Badge appearance="warning">{T.IMPERSONATED}</Badge></> : null}</>
+            Cell: ({ row }: { row: Row }) => (
+              <>{(row.user_name as string) || (row.user_id as string)}{row.user_impersonation ? <> <Badge appearance="warning">{T.IMPERSONATED}</Badge></> : null}</>
             ) },
           { accessor: 'action', Header: T.COL_ACTION, visible: true },
           { accessor: 'entity_type', Header: T.COL_ENTITY, visible: true },

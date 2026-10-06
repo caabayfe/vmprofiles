@@ -90,8 +90,8 @@ export function ProfilesPage() {
 
   const columns = [
     { accessor: 'name', Header: T.COL_NAME, visible: true,
-      Cell: ({ row }: { row: { original: ProfileListType } }) => (
-        <Link to={`/profiles/${row.original.id}`}>{row.original.name}</Link>
+      Cell: ({ row }: { row: ProfileListType }) => (
+        <Link to={`/profiles/${row.id}`}>{row.name}</Link>
       ) },
     { accessor: 'company_name', Header: T.COL_SCOPE, visible: true,
       Cell: ({ value }: { value: string | null }) => <ScopeBadge companyName={value} /> },
@@ -100,11 +100,11 @@ export function ProfilesPage() {
     { accessor: 'role_name', Header: T.COL_ROLE, visible: true },
     { accessor: 'os_name', Header: T.COL_OS, visible: true },
     { accessor: 'vcpu', Header: T.COL_COMPUTE, visible: true,
-      Cell: ({ row }: { row: { original: ProfileListType } }) => <>{row.original.vcpu} vCPU · {row.original.ram_gb} GB</> },
+      Cell: ({ row }: { row: ProfileListType }) => <>{row.vcpu} vCPU · {row.ram_gb} GB</> },
     { accessor: 'disk_total_gb', Header: T.COL_DISKS, visible: true,
-      Cell: ({ row }: { row: { original: ProfileListType } }) => <>{row.original.disk_count} · {row.original.disk_total_gb} GB</> },
+      Cell: ({ row }: { row: ProfileListType }) => <>{row.disk_count} · {row.disk_total_gb} GB</> },
     { accessor: 'cluster_name', Header: T.COL_PLACEMENT, visible: true,
-      Cell: ({ row }: { row: { original: ProfileListType } }) => <>{row.original.vcenter_name} / {row.original.cluster_name}</> },
+      Cell: ({ row }: { row: ProfileListType }) => <>{row.vcenter_name} / {row.cluster_name}</> },
     { accessor: 'software_count', Header: T.COL_SOFTWARE, visible: true, width: '90px' },
   ]
 
