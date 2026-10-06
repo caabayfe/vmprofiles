@@ -102,7 +102,7 @@ def db_errors(exc: Exception) -> Exception:
 
 async def owner_of_row(conn: asyncpg.Connection, res: Resource, row_id: UUID) -> tuple[bool, UUID | None]:
     row = await conn.fetchrow(
-        f"SELECT {OWNER_SQL[res.ownership]} AS owner FROM {res.table} t WHERE t.id = $1", row_id
+        f"SELECT {OWNER_SQL[res.ownership]} AS owner FROM {res.table} t WHERE t.id = $1", row_id  # noqa: S608
     )
     if row is None:
         raise NotFound(f"{res.entity} not found")
@@ -126,7 +126,7 @@ def register(router: SecuredRouter, res: Resource) -> None:
     select_cols = ", ".join(f"t.{c}" for c in ["id", *res.columns, "is_active", "created_at"])
     extras = "".join(f", {e}" for e in res.extra_select)
     base_select = (
-        f"SELECT {select_cols}, {owner} AS owner_company_id, "
+        f"SELECT {select_cols}, {owner} AS owner_company_id, "  # noqa: S608
         f"(SELECT co.name FROM companies co WHERE co.id = {owner}) AS owner_company_name{extras} "
         f"FROM {res.table} t"
     )
@@ -185,7 +185,7 @@ def register(router: SecuredRouter, res: Resource) -> None:
         placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
         try:
             new_id = await conn.fetchval(
-                f"INSERT INTO {res.table} ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id",
+                f"INSERT INTO {res.table} ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id",  # noqa: S608
                 *[data[c] for c in cols],
             )
         except (UniqueViolationError, ForeignKeyViolationError, CheckViolationError) as exc:
@@ -214,7 +214,7 @@ def register(router: SecuredRouter, res: Resource) -> None:
             sets.append("updated_at = now()")
         try:
             await conn.execute(
-                f"UPDATE {res.table} SET {', '.join(sets)} WHERE id = $1", item_id, *values
+                f"UPDATE {res.table} SET {', '.join(sets)} WHERE id = $1", item_id, *values  # noqa: S608
             )
         except (UniqueViolationError, ForeignKeyViolationError, CheckViolationError) as exc:
             raise db_errors(exc) from exc
@@ -226,7 +226,7 @@ def register(router: SecuredRouter, res: Resource) -> None:
     async def _set_active(conn: asyncpg.Connection, acc: Access, item_id: UUID, active: bool) -> dict[str, Any]:
         _, company = await owner_of_row(conn, res, item_id)
         acc.ensure_manage(company)
-        await conn.execute(f"UPDATE {res.table} SET is_active = $2 WHERE id = $1", item_id, active)
+        await conn.execute(f"UPDATE {res.table} SET is_active = $2 WHERE id = $1", item_id, active)  # noqa: S608
         await audit(conn, acc, entity_type=res.entity, entity_id=item_id,
                     action="restore" if active else "archive", company_id=company)
         return await fetch_one(conn, item_id)
@@ -259,7 +259,7 @@ def register(router: SecuredRouter, res: Resource) -> None:
         _, company = await owner_of_row(conn, res, item_id)
         acc.ensure_manage(company)
         try:
-            await conn.execute(f"DELETE FROM {res.table} WHERE id = $1", item_id)
+            await conn.execute(f"DELETE FROM {res.table} WHERE id = $1", item_id)  # noqa: S608
         except (UniqueViolationError, ForeignKeyViolationError, CheckViolationError) as exc:
             raise db_errors(exc) from exc
         await audit(conn, acc, entity_type=res.entity, entity_id=item_id, action="delete",

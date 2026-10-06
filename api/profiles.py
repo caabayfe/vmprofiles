@@ -77,6 +77,7 @@ class StatusIn(BaseModel):
     status: Literal["draft", "active", "archived"]
 
 
+# Column order used by the literal INSERT / UPDATE / SELECT statements below.
 PROFILE_COLS = [
     "company_id", "name", "description", "status", "vm_role_id", "operating_system_id", "vm_size_id",
     "vcpu_override", "ram_gb_override", "vcenter_id", "datacenter_id", "cluster_id", "resource_pool_id",
@@ -88,8 +89,15 @@ PROFILE_COLS = [
 # Validation + persistence
 # ---------------------------------------------------------------------------
 
+_REF_COMPANY_SQL = {
+    "vm_roles": "SELECT company_id FROM vm_roles WHERE id = $1",
+    "vm_sizes": "SELECT company_id FROM vm_sizes WHERE id = $1",
+    "vcenters": "SELECT company_id FROM vcenters WHERE id = $1",
+}
+
+
 async def _ref_company(conn: asyncpg.Connection, table: str, ref_id: UUID, what: str) -> UUID | None:
-    row = await conn.fetchrow(f"SELECT company_id FROM {table} WHERE id = $1", ref_id)
+    row = await conn.fetchrow(_REF_COMPANY_SQL[table], ref_id)
     if row is None:
         raise Invalid(f"{what} does not exist")
     return row["company_id"]
@@ -192,13 +200,13 @@ async def _insert(conn: asyncpg.Connection, acc: Access, body: ProfileIn, compan
     data = body.model_dump(exclude={"disks", "nics", "software"})
     data["company_id"] = company
     data["datacenter_id"] = await _validate(conn, body, company)
-    cols = [*PROFILE_COLS, "created_by"]
-    data["created_by"] = acc.user_id
     try:
         profile_id = await conn.fetchval(
-            f"INSERT INTO vm_profiles ({', '.join(cols)}) "
-            f"VALUES ({', '.join(f'${i}' for i in range(1, len(cols) + 1))}) RETURNING id",
-            *[data[c] for c in cols],
+            "INSERT INTO vm_profiles (company_id, name, description, status, vm_role_id, operating_system_id, "
+            "vm_size_id, vcpu_override, ram_gb_override, vcenter_id, datacenter_id, cluster_id, resource_pool_id, "
+            "vm_folder_id, vm_template_id, naming_pattern, notes, created_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id",
+            *[data[c] for c in PROFILE_COLS], acc.user_id,
         )
         await _write_children(conn, profile_id, body)
     except (UniqueViolationError, ForeignKeyViolationError, CheckViolationError) as exc:
@@ -277,7 +285,9 @@ async def get_profile(
 
 async def _load_editable(conn: asyncpg.Connection, acc: Access, profile_id: UUID) -> dict[str, Any]:
     row = await conn.fetchrow(
-        f"SELECT p.id, {', '.join('p.' + c for c in PROFILE_COLS)}, co.name AS company_name, "
+        "SELECT p.id, p.company_id, p.name, p.description, p.status, p.vm_role_id, p.operating_system_id, "
+        "p.vm_size_id, p.vcpu_override, p.ram_gb_override, p.vcenter_id, p.datacenter_id, p.cluster_id, "
+        "p.resource_pool_id, p.vm_folder_id, p.vm_template_id, p.naming_pattern, p.notes, co.name AS company_name, "
         "(SELECT count(*) FROM vm_requests q WHERE q.vm_profile_id = p.id) AS request_count, "
         "p.created_at, p.updated_at FROM vm_profiles p LEFT JOIN companies co ON co.id = p.company_id "
         "WHERE p.id = $1",
@@ -442,14 +452,17 @@ async def update_profile(
     if current_status == "archived":
         data["status"] = "archived"
     cols = [c for c in PROFILE_COLS if c != "company_id"]
-    sets = ", ".join(f"{c} = ${i}" for i, c in enumerate(cols, start=2))
     try:
         # Children first: their cluster_id must follow the profile's.
         await conn.execute("DELETE FROM vm_profile_disks WHERE vm_profile_id = $1", profile_id)
         await conn.execute("DELETE FROM vm_profile_nics WHERE vm_profile_id = $1", profile_id)
         await conn.execute("DELETE FROM vm_profiles_software WHERE vm_profile_id = $1", profile_id)
         await conn.execute(
-            f"UPDATE vm_profiles SET {sets}, updated_by = ${len(cols) + 2}, updated_at = now() WHERE id = $1",
+            "UPDATE vm_profiles SET name = $2, description = $3, status = $4, vm_role_id = $5, "
+            "operating_system_id = $6, vm_size_id = $7, vcpu_override = $8, ram_gb_override = $9, "
+            "vcenter_id = $10, datacenter_id = $11, cluster_id = $12, resource_pool_id = $13, "
+            "vm_folder_id = $14, vm_template_id = $15, naming_pattern = $16, notes = $17, "
+            "updated_by = $18, updated_at = now() WHERE id = $1",
             profile_id, *[data[c] for c in cols], acc.user_id,
         )
         await _write_children(conn, profile_id, body)

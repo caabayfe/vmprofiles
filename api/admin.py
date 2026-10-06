@@ -162,21 +162,18 @@ async def list_audit_events(
     conn: asyncpg.Connection = Depends(db),
     acc: Access = Depends(get_access),
 ) -> list[dict[str, Any]]:
-    args: list[Any] = []
-    where: list[str] = []
-    if not acc.is_global_admin:
-        args.append(list(acc.admin_companies))
-        where.append(f"a.company_id = ANY(${len(args)}::uuid[])")
-    for col, val in (("entity_type", entity_type), ("entity_id", entity_id), ("company_id", company_id)):
-        if val is not None:
-            args.append(val)
-            where.append(f"a.{col} = ${len(args)}")
-    args.append(max(1, min(limit, 1000)))
+    # Static SQL; NULL filter params mean "no filter". Global admins see
+    # everything, company admins only their companies' events.
     rows = await conn.fetch(
         "SELECT a.id, a.entity_type, a.entity_id, a.action, a.company_id, co.name AS company_name, a.summary, "
         "a.diff, a.user_name, a.user_id, a.real_user_id, a.user_impersonation, a.created_at "
         "FROM audit_events a LEFT JOIN companies co ON co.id = a.company_id "
-        f"WHERE {' AND '.join(where) or 'TRUE'} ORDER BY a.created_at DESC LIMIT ${len(args)}",
-        *args,
+        "WHERE ($1::bool OR a.company_id = ANY($2::uuid[])) "
+        "AND ($3::text IS NULL OR a.entity_type = $3) "
+        "AND ($4::uuid IS NULL OR a.entity_id = $4) "
+        "AND ($5::uuid IS NULL OR a.company_id = $5) "
+        "ORDER BY a.created_at DESC LIMIT $6",
+        acc.is_global_admin, list(acc.admin_companies), entity_type, entity_id, company_id,
+        max(1, min(limit, 1000)),
     )
     return [{**dict(r), "diff": as_json(r["diff"])} for r in rows]

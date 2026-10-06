@@ -3,6 +3,10 @@
 Simple tables go through the generic `crud.register`; the many-to-many
 attachments (datastore <-> clusters, network <-> clusters, software <-> OS
 compatibility) have dedicated "replace the set" endpoints below.
+
+Table / column names interpolated into SQL here come only from the
+code-defined RESOURCES specs (an allowlist), never from request input —
+hence the `noqa: S608` markers. All values are bound as $n parameters.
 """
 
 from typing import Any, Literal
@@ -199,7 +203,7 @@ async def _replace_cluster_links(
 ) -> dict[str, Any]:
     _, company = await owner_of_row(conn, res, item_id)
     acc.ensure_manage(company)
-    vcenter_id = await conn.fetchval(f"SELECT vcenter_id FROM {res.table} WHERE id = $1", item_id)
+    vcenter_id = await conn.fetchval(f"SELECT vcenter_id FROM {res.table} WHERE id = $1", item_id)  # noqa: S608
     wanted = set(cluster_ids)
     if wanted:
         found = await conn.fetch(
@@ -208,19 +212,19 @@ async def _replace_cluster_links(
         if len(found) != len(wanted):
             raise Invalid("every cluster must belong to the same vCenter")
     current = {r["cluster_id"] for r in await conn.fetch(
-        f"SELECT cluster_id FROM {link_table} WHERE {link_col} = $1", item_id)}
+        f"SELECT cluster_id FROM {link_table} WHERE {link_col} = $1", item_id)}  # noqa: S608
     removed, added = current - wanted, wanted - current
     try:
         if removed:
             await conn.execute(
-                f"DELETE FROM {link_table} WHERE {link_col} = $1 AND cluster_id = ANY($2::uuid[])",
+                f"DELETE FROM {link_table} WHERE {link_col} = $1 AND cluster_id = ANY($2::uuid[])",  # noqa: S608
                 item_id, list(removed),
             )
     except ForeignKeyViolationError as exc:
         raise Conflict("a profile still uses this item on one of the removed clusters") from exc
     if added:
         await conn.executemany(
-            f"INSERT INTO {link_table} (vcenter_id, cluster_id, {link_col}) VALUES ($1, $2, $3)",
+            f"INSERT INTO {link_table} (vcenter_id, cluster_id, {link_col}) VALUES ($1, $2, $3)",  # noqa: S608
             [(vcenter_id, c, item_id) for c in added],
         )
     if added or removed:

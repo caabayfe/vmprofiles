@@ -28,24 +28,25 @@ async def lookups(
 ) -> dict[str, Any]:
     acc.ensure_view(company_id)
     # Items usable by a profile in this scope: global, plus the company's own.
-    scoped = "(company_id IS NULL OR company_id = $1)" if company_id else "company_id IS NULL"
-    args = [company_id] if company_id else []
-
+    # With $1 NULL, `company_id = $1` is never true, so only global rows match.
     roles = await conn.fetch(
-        f"SELECT id, name, company_id FROM vm_roles WHERE is_active AND {scoped} ORDER BY name", *args)
+        "SELECT id, name, company_id FROM vm_roles "
+        "WHERE is_active AND (company_id IS NULL OR company_id = $1::uuid) ORDER BY name", company_id)
     sizes = await conn.fetch(
-        f"SELECT id, name, vcpu, cores_per_socket, ram_gb, company_id FROM vm_sizes "
-        f"WHERE is_active AND {scoped} ORDER BY vcpu, ram_gb", *args)
+        "SELECT id, name, vcpu, cores_per_socket, ram_gb, company_id FROM vm_sizes "
+        "WHERE is_active AND (company_id IS NULL OR company_id = $1::uuid) ORDER BY vcpu, ram_gb", company_id)
     oses = await conn.fetch(
         "SELECT id, family, name, version, vmware_guest_id FROM operating_systems WHERE is_active "
         "ORDER BY family, name, version")
     software = await conn.fetch(
-        f"SELECT s.id, s.name, s.version, s.vendor, s.install_method, s.company_id, "
-        f"ARRAY(SELECT x.operating_system_id FROM operating_systems_software x WHERE x.software_id = s.id) "
-        f"AS operating_system_ids FROM software s WHERE s.is_active AND {scoped.replace('company_id', 's.company_id')} "
-        f"ORDER BY s.name, s.version", *args)
+        "SELECT s.id, s.name, s.version, s.vendor, s.install_method, s.company_id, "
+        "ARRAY(SELECT x.operating_system_id FROM operating_systems_software x WHERE x.software_id = s.id) "
+        "AS operating_system_ids FROM software s "
+        "WHERE s.is_active AND (s.company_id IS NULL OR s.company_id = $1::uuid) "
+        "ORDER BY s.name, s.version", company_id)
     vcenters = await conn.fetch(
-        f"SELECT id, name, fqdn, company_id FROM vcenters WHERE is_active AND {scoped} ORDER BY name", *args)
+        "SELECT id, name, fqdn, company_id FROM vcenters "
+        "WHERE is_active AND (company_id IS NULL OR company_id = $1::uuid) ORDER BY name", company_id)
 
     vc_ids = [v["id"] for v in vcenters]
     dcs = await conn.fetch(
