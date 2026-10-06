@@ -168,6 +168,11 @@ setTranslations({
     HELP_TEMPLATE: 'Only templates for the selected operating system on this vCenter are listed',
     HELP_CLUSTER_ATTACHED: 'Attached to this cluster',
     HELP_PICK_CLUSTER_FIRST: 'Pick a cluster in the placement step first.',
+    HELP_NO_NETWORKS_ATTACHED:
+      'No networks are attached to this cluster. In the vCenter, open the Networks tab and use “Attach to clusters”.',
+    HELP_NO_DATASTORES_ATTACHED:
+      'No datastores are attached to this cluster, so disks will use the cluster default. To choose one, open the Datastores tab in the vCenter and use “Attach to clusters”.',
+    LINK_OPEN_VCENTER: 'Open vCenter',
     HELP_SOFTWARE_SCOPE: 'Global software plus software of this profile’s company, filtered by operating system.',
     HELP_PROFILE_HAS_REQUESTS: 'This profile has requests. Edits apply to new requests only; submitted requests keep their own copy.',
     HELP_HOSTNAME: 'Letters, digits and hyphens. With quantity > 1 this is used as a prefix.',

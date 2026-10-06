@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Badge, Button, Details, Spinner, Title, T } from '@nttdsp/react-components'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type UUID } from '../api'
@@ -69,6 +69,15 @@ function useDerived(lookups: LookupsType | undefined, form: Form) {
       isWindows: (os?.family ?? 'windows') === 'windows',
     }
   }, [lookups, form])
+}
+
+/** Shown when the chosen cluster has nothing of a kind attached yet. */
+function AttachHint({ vcenterId, message }: { vcenterId: UUID | null; message: string }) {
+  return (
+    <p className="vp-error">
+      {message} <Link to={`/infrastructure/${vcenterId ?? ''}`}>{T.LINK_OPEN_VCENTER}</Link>
+    </p>
+  )
 }
 
 export function ProfileEditor() {
@@ -274,6 +283,9 @@ export function ProfileEditor() {
       case 'disks':
         return (
           <div className="vp-form">
+            {form.cluster_id && d.datastores.length === 0 && (
+              <AttachHint vcenterId={form.vcenter_id} message={T.HELP_NO_DATASTORES_ATTACHED} />
+            )}
             {form.disks.map((disk, i) => (
               <div key={i} className="vp-grid-row" style={{ gridTemplateColumns: '0.8fr 0.6fr 0.8fr 0.6fr 0.9fr 1.2fr auto' }}>
                 <TextField label={i === 0 ? T.FIELD_DISK_LABEL_OS : T.FIELD_DISK_LABEL} value={disk.label} disabled={readOnly} onChange={(v) => setDisk(i, { label: v })} />
@@ -303,6 +315,9 @@ export function ProfileEditor() {
         return (
           <div className="vp-form">
             {!form.cluster_id && <p className="vp-muted">{T.HELP_PICK_CLUSTER_FIRST}</p>}
+            {form.cluster_id && d.networks.length === 0 && (
+              <AttachHint vcenterId={form.vcenter_id} message={T.HELP_NO_NETWORKS_ATTACHED} />
+            )}
             {form.nics.map((nic, i) => (
               <div key={i} className="vp-grid-row" style={{ gridTemplateColumns: '2fr 1fr auto' }}>
                 <SelectField label={`${T.FIELD_NETWORK} ${i + 1}`} required value={nic.network_id || null} disabled={readOnly}
@@ -314,7 +329,7 @@ export function ProfileEditor() {
                 <Button appearance="text" disabled={readOnly} onClick={() => set('nics', form.nics.filter((_, j) => j !== i))}>{T.ACTION_REMOVE}</Button>
               </div>
             ))}
-            {!readOnly && form.cluster_id && form.nics.length < 10 && (
+            {!readOnly && form.cluster_id && d.networks.length > 0 && form.nics.length < 10 && (
               <div>
                 <Button appearance="neutral" onClick={() => set('nics', [...form.nics, { nic_order: form.nics.length, network_id: d.networks[0]?.id ?? '', adapter_type: 'vmxnet3' }])}>
                   {T.ACTION_ADD_NIC}
