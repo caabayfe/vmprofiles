@@ -1,0 +1,6 @@
+# Pre-data hooks land here as NNNN_<slug>.sql.
+#
+# Use for state that has to exist BEFORE the schema apply (e.g.
+# backfilling a column you're about to add a NOT NULL on). Most
+# seed data goes in data/post/ — see the comment in
+# 0001_seed_*.sql for the bootstrap-time ordering rules.

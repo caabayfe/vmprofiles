@@ -1,0 +1,5 @@
+# Post-data hooks land here as NNNN_<slug>.sql.
+#
+# Use for state that has to settle AFTER the schema apply: role
+# grants, materialized view refreshes, fixed-row inserts that
+# depend on tables added in the same migrate.

@@ -1,0 +1,14 @@
+# Local virtualenvs and caches don't belong in the build context
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# Editor / OS junk
+.idea/
+.vscode/
+.DS_Store

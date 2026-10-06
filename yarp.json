@@ -1,0 +1,30 @@
+{
+  "name": "vm-profiles",
+  "description": "Define global and company-specific VM build profiles and request VMs from them",
+  "space": "ibiol",
+  "shortUrl": true,
+  "components": [
+    {
+      "name": "web",
+      "type": "static-web-app",
+      "dir": "webapp",
+      "buildOutput": "dist",
+      "languages": [
+        "en"
+      ]
+    },
+    {
+      "name": "api",
+      "type": "container-app",
+      "dir": "api",
+      "databaseAccess": [
+        "db"
+      ]
+    },
+    {
+      "name": "db",
+      "type": "database-postgres",
+      "dir": "db"
+    }
+  ]
+}
